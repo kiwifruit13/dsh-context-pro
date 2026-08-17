@@ -1,0 +1,10 @@
+# DSH-Context-Pro 装配示例（npm 包模式）
+# 安装后通过包名加载：npm install @kiwifruit/dsh-context-pro
+- insert:
+    - id: context-pro
+      name: '@kiwifruit/dsh-context-pro'
+      config:
+        chains:
+          enabled: true
+          injectProtocol: true
+          maxNodesPerChain: 20

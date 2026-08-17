@@ -1,0 +1,181 @@
+用 `dsh plugin add` 安装社区插件的流程很直接，简单来说就是：**发现插件 → 执行安装命令 → 重启生效**。
+
+具体的安装流程如下：
+
+### 🚀 核心安装流程
+
+整个过程主要分三步：
+
+**1. 发现插件**
+在安装前，你需要先找到想要的插件。可以通过以下途径发现社区插件：
+*   **插件市场（推荐）**：这是最方便的方式。你可以先在 DSH 中安装一个市场插件（例如执行 `dsh plugin --profile web add dshmarket`或 `@ace-zone/dsh-market`），重启后就能在 Web 界面的**设置 → 插件 → 插件市场**中浏览和安装插件了。
+*   **Awesome 列表**：访问 `awesome-dsh-plugin` 这类精选列表，里面收录了许多优质的社区插件。
+*   **GitHub**：直接在 GitHub 上搜索带有 `dsh-plugin` 话题的仓库。
+*   **第三方网站**：访问如 WhaleHub 等第三方插件网站，它们通常会提供一键复制的安装命令。
+
+**2. 执行安装命令**
+找到插件后，在终端中执行安装命令。命令的基本格式是：
+```bash
+dsh plugin --profile <profile名称> add <插件标识>
+```
+
+这里有几个关键点：
+*   **指定 Profile**：`<profile名称>` 是你想安装插件的配置文件，最常用的是 `web`。例如：`--profile web`。
+*   **插件标识**：`<插件标识>` 可以是 npm 包名（如 `dshmarket`、`@ace-zone/dsh-market`），也可以是 GitHub 仓库地址（如 `"github:owner/repo#main"`），甚至是本地路径（如 `link:<克隆目录绝对路径>`）。
+
+**3. 重启生效**
+安装命令执行完毕后，**必须重启 DSH 服务**，新安装的插件才能生效。这是因为插件的加载和组合是在 DSH 启动时完成的。
+
+### 💡 补充说明与注意事项
+
+*   **安装的本质**：`dsh plugin add` 命令本质上是调用 `pnpm` 来管理插件依赖。一个符合规范的插件包，其 `package.json` 文件中必须包含 `dsh.bundle` 声明。
+*   **耗时**：如果是首次安装插件到一个比较大的 profile，可能会花费几分钟时间。
+*   **安全提醒**：安装社区插件等同于在你的电脑上运行第三方代码，它具有与你本人相同的权限。因此，安装前最好查看一下插件源码，对于不熟悉的插件，建议在隔离环境中测试。
+
+要将开发的 DSH 插件打包成像 `dsh plugin add` 那样安装的包，核心是**将其发布为一个遵循特定约定的 npm 包**。
+
+整个过程主要分为以下几步：
+
+### 📦 第一步：准备你的插件包（创建 Bundle）
+
+你的插件目录需要包含三个核心文件，这是 DSH 识别和加载插件的关键。
+
+1.  **`package.json`：插件的“身份证”与“说明书”**
+    这是最关键的一步，需要在其中声明 `dsh.bundle` 字段。
+    ```json
+    {
+      "name": "dsh-hello-plugin",  // 你的插件包名
+      "version": "0.1.0",
+      "type": "module",
+      "main": "index.js",
+      "files": ["index.js", "cordis.patch.yml"], // 发布时需包含的文件
+      "dsh": {
+        "bundle": {
+          "patch": "./cordis.patch.yml" // 指向你的patch文件
+        }
+      }
+    }
+    ```
+    *   `name`：包名没有强制前缀，但社区习惯用 `dsh-` 开头以方便识别。
+    *   `files`：这里列出的文件会在发布时被包含进 npm 包。
+    *   `dsh.bundle.patch`：这个字段告诉 DSH，安装后应用哪个配置文件。
+
+2.  **`cordis.patch.yml`：插件的“接线图”**
+    这个文件定义了插件如何被“挂载”到 DSH 上，内容和你本地开发时用的 `--patch` 覆盖类似。
+    ```yaml
+    - insert:
+      - id: hello
+        name: dsh-hello-plugin
+    ```
+
+3.  **`index.js`：插件的“大脑”**
+    这是插件的主要逻辑代码，需要导出一个标准的 Cordis 插件。
+    ```javascript
+    export const name = 'hello-plugin';
+    export function apply() {
+      console.log('[hello-plugin] plugin loaded!');
+    }
+    ```
+
+### 🚀 第二步：发布到 npm
+
+1.  **注册并登录 npm**
+    如果你还没有 npm 账号，需要先去 npm 官网注册。然后在终端登录：
+    ```bash
+    npm login
+    ```
+
+2.  **发布插件**
+    在包含 `package.json` 的插件目录下，执行发布命令：
+    ```bash
+    npm publish
+    ```
+    如果需要，可以添加 `--provenance` 参数来增加可验证性。
+
+### ✅ 第三步：验证与分发
+
+1.  **本地验证**
+    发布后，强烈建议先在一个干净的 profile 中安装测试，确保一切正常。
+    ```bash
+    dsh plugin --profile test add dsh-hello-plugin
+    ```
+
+2.  **添加 `dsh-plugin` 话题**
+    为了让更多人发现你的插件，请在 GitHub 仓库的设置中添加 `dsh-plugin` 话题。这是官方指定的发现渠道。
+
+3.  **完善文档**
+    在项目的 `README.md` 中清晰说明插件的功能、安装方法和使用示例。
+
+### 💡 补充说明与注意事项
+
+*   **开发辅助工具**：社区正在推进官方的插件脚手架，未来可以通过 `pnpm create dsh-plugin` 这样的命令来快速生成模板。目前，你可以参考社区模板，如 `dsh-handbook` 中的示例。
+*   **三种分发方式对比**：发布到 npm 是主流方式。此外，用户也可以通过 GitHub 仓库（`dsh plugin add github:owner/repo`）或本地 tarball 文件安装。
+*   **版本兼容性**：DSH 目前处于开发者预览版，可能会有破坏性变更。建议在 README 中注明兼容的 DSH 版本范围。
+*   **安全提醒**：再次提醒，安装社区插件等同于运行第三方代码，请务必注意安全。
+*   **关于 `dsh.client`**：如果你的插件包含浏览器端（前端）逻辑，还需要在 `package.json` 中配置 `dsh.client` 字段。这涉及到前端代码的加载方式，相对更复杂一些。
+
+总的来说，发布 DSH 插件的流程与发布一个标准的 npm 包非常相似，关键在于 `package.json` 中必须包含正确的 `dsh.bundle` 声明。
+
+
+社区插件的安装流程，主要可以分为**图形界面**和**命令行**两种方式。它们本质都是执行 `dsh plugin add` 命令，只是操作的入口不同。
+
+### 🖱️ 方式一：通过图形界面（插件市场）安装
+
+这是最直观、对新手最友好的方式，可以实现“一键安装”。
+
+**前置步骤：安装“插件市场”本身**
+要使用图形界面，你需要先为 DSH 安装一个“插件市场”插件。比较常用的有：
+*   `dshmarket`
+*   `@ace-zone/dsh-market`
+*   `@sanqi-normal/dsh-webui-market-plugin`
+
+安装命令（以 `dshmarket` 为例）：
+```bash
+dsh plugin --profile web add dshmarket
+```
+安装后**重启 DSH Web 服务**，在 Web 界面的 **设置 (Settings) → 插件 (Plugins)** 中，就能看到“**插件市场 (Plugin Market)**”的标签页了。
+
+**安装插件的步骤**：
+1.  **打开插件市场**：在 DSH Web 界面中，进入 `设置 → 插件 → 插件市场`。
+2.  **浏览和搜索**：你可以按分类、热度、最新等条件浏览，或直接搜索插件。
+3.  **一键安装**：找到目标插件后，直接点击其卡片上的 **“安装” (Install)** 按钮即可。系统会显示安装进度。
+4.  **重启生效**：安装完成后，根据提示**重启 DSH**即可。
+
+> **注意**：部分市场插件为了保证安全，会限制只能安装经过官方或社区审核的插件目录中的来源。
+
+### ⌨️ 方式二：通过命令行安装
+
+这是最通用、最灵活的方式，适合熟悉命令行的用户。
+
+**1. 发现插件**
+在安装前，你需要知道想安装的插件的“标识”。你可以通过以下渠道发现插件：
+*   **Awesome 列表**：访问 `awesome-dsh-plugin.com` 等精选列表。
+*   **第三方插件网站**：如 [WhaleHub](https://whalehub-dsh.vercel.app)。
+*   **GitHub**：直接搜索带有 `dsh-plugin` 话题的仓库。
+
+**2. 执行安装命令**
+打开终端，执行 `dsh plugin add` 命令。`<插件标识>` 支持多种格式：
+
+| 来源类型 | 命令格式 | 示例 |
+| :--- | :--- | :--- |
+| **npm 包 (推荐)** | `dsh plugin --profile <配置名> add <包名>` | `dsh plugin --profile web add @liustack/modlens@3.17.2` |
+| **GitHub 仓库** | `dsh plugin --profile <配置名> add github:所有者/仓库` | `dsh plugin --profile web add github:Sanqi-normal/dsh-webui-market-plugin` |
+| **本地目录** | `dsh plugin --profile <配置名> add <本地绝对路径>` | `dsh plugin --profile web add /path/to/my-plugin` |
+
+*   `<配置名>` 通常为 `web`，代表你要把插件安装到 Web 界面这个配置文件中。
+*   建议安装时指定具体版本号，避免使用 `@latest` 带来不确定性。
+
+**3. 重启生效**
+与图形界面一样，命令执行成功后，**必须重启 DSH 服务**，插件才能被加载。
+
+### 📝 安装的本质与验证
+
+*   **安装的本质**：`dsh plugin add` 命令实际上是调用 `pnpm` 来管理依赖。它会将声明了 `dsh.bundle` 的插件包添加到指定 profile 的依赖中。
+*   **验证安装**：安装后，可以用 `dsh plugin --profile web list` 命令查看已安装的插件列表，确认是否成功。
+*   **升级插件**：升级插件很简单，**再次执行相同的 `add` 命令**即可。
+
+### ⚠️ 注意事项
+
+*   **环境要求**：请确保已安装 Node.js (≥ 22.13) 和 pnpm。
+*   **安全第一**：社区插件由第三方开发者提供，安装前请了解其功能，尽量选择知名或源码公开的插件。
+*   **故障排查**：如果安装后插件未生效，请检查 DSH 是否已重启。若遇到 `pnpm` 构建脚本被拦截，可能需要在 profile 的 `pnpm-workspace.yaml` 中配置 `allowBuilds`。

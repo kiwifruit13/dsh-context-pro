@@ -1,0 +1,10 @@
+# DSH-Context-Pro 发布版 patch
+# dsh plugin add @kiwifruit/dsh-context-pro 后自动应用此 patch 挂载插件
+- insert:
+    - id: context-pro
+      name: '@kiwifruit/dsh-context-pro'
+      config:
+        chains:
+          enabled: true
+          injectProtocol: true
+          maxNodesPerChain: 20
