@@ -1,7 +1,7 @@
 {
   "name": "@kiwifruit/dsh-context-pro",
   "description": "DSH Agent 上下文浸泡器：在 System Prompt 注入五维认知图鉴，让 CoT 自行调配认知结构；末尾 JSON 快照提取链演化状态（链协议模式，prestep 零干预）",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publishConfig": {
     "access": "public"
   },
@@ -13,10 +13,14 @@
       "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
     },
+    "./client": {
+      "default": "./src/client.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
     "lib",
+    "src/client.js",
     "cordis.patch.yml",
     "README.md",
     "LICENSE"
@@ -28,7 +32,8 @@
   },
   "dsh": {
     "bundle": {
-      "patch": "./cordis.patch.yml"
+      "patch": "./cordis.patch.yml",
+      "client": "./src/client.js"
     }
   },
   "license": "GPL-3.0",
@@ -45,18 +50,21 @@
     "cognitive"
   ],
   "dependencies": {
-    "@deepseek-ai/schemastery": "^3.18.1"
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "@kiwifruit/dsh-context-pro": "^0.3.0"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/dsh-agent": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-llm": "^0.0.1-rc.1"
+    "@deepseek-ai/dsh-llm": "^0.0.1-rc.1",
+    "@deepseek-ai/dsh-invariants": "^0.1.0-rc.6"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/dsh-agent": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-llm": "^0.0.1-rc.1",
     "@deepseek-ai/schemastery": "^3.18.1",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "zod-to-openapi": "^0.2.1"
   }
 }
