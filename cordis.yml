@@ -8,3 +8,5 @@
           enabled: true
           injectProtocol: true
           maxNodesPerChain: 20
+          insight:
+            enabled: true

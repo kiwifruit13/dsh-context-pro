@@ -5,6 +5,72 @@
  * 打标签时动态声明驱动（模型是演化决策者，提取器忠实执行）。
  */
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
+import type { TopicsResult } from './insight.ts'
+
+/** 洞察引擎可配参数（P0 可配置化） */
+export interface InsightConfig {
+  /** 相似度阈值：Jaccard >= 此值视为重复（默认 0.15） */
+  similarityThreshold?: number
+  /** 连续未确认轮次上限：超过则过期淘汰（默认 3） */
+  maxStaleRounds?: number
+  /** 洞察项总数上限：超限按 evidence+severity 淘汰（默认 20） */
+  maxInsights?: number
+  /** 话题总数上限（默认 10） */
+  maxTopics?: number
+  /** 历史累积窗口（最近 N 轮 = 2N 条消息，默认 40） */
+  historyWindow?: number
+  /** 会话总数上限：超限淘汰最旧不活跃会话（默认 100） */
+  maxSessions?: number
+  /** 是否启用选择性分析器（P1，默认 false 兼容旧行为） */
+  selectiveAnalysis?: boolean
+  /** API Key 鉴权配置（P2 可选） */
+  auth?: {
+    enabled?: boolean
+    keys?: string[]
+    keyHashes?: string[]
+    headerName?: string
+    queryParam?: string
+    skipPaths?: string[]
+    devAutoKey?: boolean
+  }
+  /** 限流配置（P2 可选） */
+  rateLimit?: {
+    maxRequests?: number
+    windowMs?: number
+  }
+}
+
+/** 链图变更类型（P1 选择性分析器触发依据） */
+export type ChainChangeType =
+  | 'chain-added'           // 新增链
+  | 'chain-removed'         // 移除链
+  | 'chain-type-changed'    // 链类型变更（如 causal→logic）
+  | 'confidence-shift'      // 置信度显著变化（≥0.3）
+  | 'supersede-detected'    // 出现 supersede 回溯
+  | 'terminal-filled'       // 终结角色被填充（solution/conclusion 等）
+  | 'terminal-emptied'      // 终结角色被清空
+  | 'divergence-detected'   // 同链出现多路径分歧
+  | 'structure-changed'     // 父子关系/拓扑结构变化
+
+/** 变更上下文（传给 analyze()，决定跑哪些分析器） */
+export interface ChangeContext {
+  /** 本轮检测到的变更类型集合 */
+  changes: Set<ChainChangeType>
+  /** 上一轮快照（用于对比） */
+  prevSnapshot?: ChainSnapshot | null
+  /** 当前快照 */
+  currSnapshot?: ChainSnapshot | null
+  /** 是否首轮（无历史可比） */
+  isFirstRound: boolean
+}
+
+/** 分析器触发规则：声明关心的变更类型 */
+export interface AnalyzerTrigger {
+  analyzerName: string
+  triggers: ChainChangeType[]
+  /** 是否为必跑（如首轮、全量刷新） */
+  alwaysRun?: boolean
+}
 
 // ---------------------------------------------------------------------------
 // 链类型与角色
@@ -236,5 +302,205 @@ export interface ChainIndex {
   /** 脉络导览（6.5 P4）：链图 → 元数据层投射（GPS/轨道图/缺口），供 O.3 可观测消费 */
   guide(sessionId: string): ChainGuide | undefined
   /** 生命周期：会话结束/删除 → 清空该会话链图 */
+  dispose(sessionId: string): void
+}
+
+// ---------------------------------------------------------------------------
+// 洞察模块（超然层：只观察、只建议、不干预 CoT）
+// ---------------------------------------------------------------------------
+
+/** 洞察项类型 */
+export type InsightType =
+  | 'cross-reaction'    // 链间化学反应检测
+  | 'migration'         // 链迁移预测
+  | 'confidence-trend'  // 置信度趋势预警
+  | 'gap-aggregation'   // 脉络缺口聚合
+  | 'divergence-watch'  // 分歧收敛预测
+
+/** 严重程度 */
+export type Severity = 'info' | 'warn' | 'critical'
+
+/** 洞察关联引用（结构化，替代原先隐式 string[] 格式） */
+export interface InsightReference {
+  /** 去重用 scope key，分析器自行保证唯一性 */
+  scopeKey: string
+  /** 关联链类型（可选，用于回溯图节点内容） */
+  chain?: ChainKind
+  /** 关联链根号（可选，用于精确定位节点） */
+  root?: number
+  /** 关联角色（可选，用于区分同根不同角色的分歧/趋势） */
+  role?: ChainRole
+  /** 底层节点 id（可选，仅 divergence 双路径场景使用） */
+  nodeIds?: string[]
+}
+
+/** 单条洞察（建议性质，非约束） */
+export interface InsightItem {
+  type: InsightType
+  severity: Severity
+  /** 一句话概括 */
+  title: string
+  /** 详细分析 */
+  detail: string
+  /** 关联引用（回溯用，结构化替代隐式 string[]） */
+  references?: InsightReference[]
+  /** 证据计数：同一信号被反复检测到时累加，值越高越值得关注（默认 1） */
+  evidence: number
+  /** 内部字段：上次被确认的轮次（用于过期淘汰，分析器无需设置） */
+  lastSeenRound?: number
+  timestamp: number
+}
+
+/** 话题形态：延展型（往哪深挖）/ 收束型（该进入下一阶段了） */
+export type TopicKind = 'extension' | 'convergence'
+
+/** 推荐话题（用户侧，按需渲染） */
+export interface RecommendationTopic {
+  kind: TopicKind
+  /** 用户可直接问的问题 */
+  question: string
+  /** 为什么建议问这个 */
+  rationale: string
+  relatedChain?: ChainKind
+  timestamp: number
+}
+
+/** 会话内洞察存储（生命周期跟会话，session/disposed 一并销毁） */
+export interface InsightStore {
+  /** 洞察项（保留最近 20 条，优先级淘汰） */
+  insights: InsightItem[]
+  /** 推荐话题（每轮重建，只保留最新一轮） */
+  topics: RecommendationTopic[]
+  /** 当前轮次计数（每次 analyze 递增） */
+  round: number
+}
+
+/** 洞察引擎接口（超然层，只读 ChainGraph + ChainGuide，产出建议） */
+export interface InsightEngine {
+  /** 每轮回复后分析：更新建议池 + 话题候选池（P1 接受 ChangeContext 按需触发分析器） */
+  analyze(
+    sessionId: string,
+    graph: ChainGraph,
+    guide: ChainGuide,
+    snapshot: ChainSnapshot | null | undefined,
+    changeContext?: ChangeContext,
+  ): void
+  /** 获取当前会话的洞察项（供 get_insights tool 调取） */
+  getInsights(sessionId: string, type?: InsightType): InsightItem[]
+  /** 获取当前会话的推荐话题（供 UI / 会话结束便条渲染） */
+  getTopics(sessionId: string): RecommendationTopic[]
+  /** 获取最近活跃会话的推荐话题（供 Client RPC 调取） */
+  getLatestTopics(): TopicsResult
+  /** 精确判断会话 store 是否存在（用于 evicted 判断，避免空话题误判） */
+  hasStore(sessionId: string): boolean
+  /** 判断会话是否有话题（比 getTopics().length > 0 更语义化） */
+  hasTopics(sessionId: string): boolean
+  /** 订阅话题变更事件（P2：SSE 实时推送用） */
+  on(event: 'topics-changed', handler: (payload: { sessionId: string; topics: RecommendationTopic[] }) => void): () => void
+  /**
+   * 标记 Client 已激活：之后 hook 不再在该会话追加便条，
+   * 改由 Client UI 承担话题展示职责（更优通道）。
+   * 会话级别生效——其他会话不受影响。
+   */
+  markClientActive(sessionId: string): void
+  /** 查询 Client 是否激活（hook.ts 追加便条前检查） */
+  isClientActive(sessionId: string): boolean
+  /**
+   * 接收 hook.ts 胶水转换后的 session 事件（过滤器/选择器入口）。
+   *
+   * hook.ts 在 session/event 回调里把 DSH event 转换为 SessionEventInput，
+   * 调用本方法累积到 FilterSelector。分析器在 analyze 时通过 InsightNeed
+   * 查询精炼后的历史（如 confidence-trend 查询 recent-snapshots 重建趋势）。
+   */
+  ingestEvent(sessionId: string, event: SessionEventInput): void
+  /** 生命周期：会话结束/删除 → 清空洞察存储 */
+  dispose(sessionId: string): void
+}
+
+// ---------------------------------------------------------------------------
+// 过滤/选择层协议（洞察模块入口组件，规则由洞察需求驱动）
+// ---------------------------------------------------------------------------
+// 架构定位：
+//   hook.ts（胶水层）→ SessionEventInput → FilterSelector.ingest
+//   Analyzer → InsightNeed → FilterSelector.query → InsightHistoryItem[]
+//
+// 设计原则（CLAUDE.md §2.3）：
+//   - 职责单一：FilterSelector 只做累积 + 查询，不感知 DSH 细节
+//   - 类型明确：所有字段类型显式声明
+//   - 演进兼容：InsightNeed 是 union，加新 need 类型不破坏现有调用
+//   - 胶水轻薄：hook.ts 负责 DSH event → SessionEventInput 转换，不含业务规则
+// ---------------------------------------------------------------------------
+
+/**
+ * hook.ts 胶水转换后的输入（FilterSelector 不感知 DSH 细节）。
+ *
+ * hook.ts 在 session/event 回调里把 DSH 原始 event 转换为本结构，
+ * 包含洞察所需的全部信息（纯文本 + 解析后快照）。
+ */
+export interface SessionEventInput {
+  /** 事件类型（如 'user/message' / 'assistant/message'） */
+  type: string
+  /** 消息内容（纯文本，已拼接 text 块） */
+  text: string
+  /** 消息角色 */
+  role: 'user' | 'assistant'
+  /** 时间戳（ms） */
+  timestamp: number
+  /** 解析后的快照（如该消息含 JSON 快照行则提取；hook.ts 负责 parse） */
+  snapshot?: ChainSnapshot
+}
+
+/**
+ * 精炼后的历史项（FilterSelector.query 输出）。
+ * 分析器基于此结构进行分析，不感知 DSH session 细节。
+ */
+export interface InsightHistoryItem {
+  /** 消息角色 */
+  role: 'user' | 'assistant'
+  /** 纯文本 content */
+  text: string
+  /** JSON 快照（如该消息含快照则保留） */
+  snapshot?: ChainSnapshot
+  /** 第几轮（按 assistant/message 计数） */
+  round: number
+  /** 时间戳（ms） */
+  timestamp: number
+}
+
+/**
+ * 洞察需求（分析器向 FilterSelector 查询时表达）。
+ *
+ * Discriminated union：按 type 字段路由不同查询语义。
+ * 新增 need 类型只需加分支，不破坏现有分析器（演进兼容）。
+ */
+export type InsightNeed =
+  /** 最近 N 个含快照的消息（confidence-trend 用，从快照重建置信度序列） */
+  | { type: 'recent-snapshots'; limit: number }
+  /** 引用过去的消息（含"之前/上文/第N轮"等关键词；cross-reaction 用） */
+  | { type: 'reference-to-past'; keywords?: string[] }
+  /** 某角色的最近 N 条消息（migration / divergence 用） */
+  | { type: 'role-sequence'; role: 'user' | 'assistant'; limit: number }
+  /** 含关键词的消息（gap-aggregation 用，按关键词定位缺口相关上下文） */
+  | { type: 'by-keyword'; keyword: string; limit?: number }
+  /** 全量（限窗口内；兜底查询） */
+  | { type: 'all'; limit: number }
+
+/**
+ * 过滤/选择器接口（洞察模块入口组件）。
+ *
+ * 职责：
+ *   - ingest：累积 hook.ts 胶水转换后的 SessionEventInput
+ *   - query：按分析器表达的 InsightNeed 查询精炼后的历史
+ *   - dispose：session/disposed 时清理该 session 的累积
+ *
+ * 不感知 DSH session 类型，可独立 mock 测试。
+ * 内存级累积，窗口大小由实现决定（默认最近 20 轮）。
+ */
+export interface FilterSelector {
+  /** hook.ts 调用：累积原始事件（已胶水转换） */
+  ingest(sessionId: string, event: SessionEventInput): void
+  /** 分析器调用：按需求查询精炼后的历史 */
+  query(sessionId: string, need: InsightNeed): InsightHistoryItem[]
+  /** 生命周期：session/disposed 时清理累积 */
   dispose(sessionId: string): void
 }

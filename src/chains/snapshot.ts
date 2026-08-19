@@ -1,19 +1,3 @@
-/** 置信度括注正则：（置信度78%）/ (把握度 60%) /（可信度九成不认，只认数字百分比） */
-const CONFIDENCE_RE = /[（(]\s*(?:置信度|把握度|可信度)\s*(\d{1,3})\s*%\s*[）)]/
-
-/**
- * 从文本括注提取置信度（6.4 数据模型）：
- *   "需求失控（置信度78%）" → 0.78；无合规括注 → undefined。
- * 内容本身保留括注（信息无损），confidence 是结构化副本。
- */
-export function confidenceOf(text: string): number | undefined {
-  const m = text.match(CONFIDENCE_RE)
-  if (!m) return undefined
-  const n = Number(m[1])
-  if (Number.isNaN(n) || n <= 0) return undefined
-  return Math.min(n / 100, 1)
-}
-
 /**
  * 末尾 JSON 快照通道：第二提取通道（与行内锚点互补）。
  *
@@ -30,6 +14,8 @@ export function confidenceOf(text: string): number | undefined {
  *     （{"value":..,"from":["ai","user"]}）
  *   - supersede：显式回溯通道——废旧主链保留为负向锚点（废因必填），
  *     nodes 作为新链重建（逻辑可继承：合流条目 from 指向分叉路径）
+ *
+ * 8.6 容错层：tryFixJson 修复常见 JSON 格式错误，降低模型格式异常导致的快照丢失率。
  */
 import {
   CHAIN_KINDS,
@@ -42,46 +28,67 @@ import {
   type SnapshotNodeValue,
   type SnapshotSupersede,
 } from './types.ts'
+import { recordSnapshotAttempt } from '../metrics.ts'
 
-/** 快照 nodes 中文键 → ChainRole（与 ROLE_BY_KIND 表层角色一一对应） */
-const ROLE_BY_KEY: Record<string, ChainRole> = {
-  '问题': 'problem', '原因': 'cause', '方案': 'solution',
-  '前提': 'premise', '推理': 'reasoning', '结论': 'conclusion',
-  '动作': 'action', '步骤': 'step', '结果': 'result',
-  '开端': 'beginning', '发展': 'development', '转折': 'twist', '结局': 'ending',
-  '过去': 'past', '现在': 'present', '未来': 'future',
-}
+/**
+ * 尝试修复常见 JSON 格式错误（8.6 容错层）。
+ * 模型输出的 JSON 快照可能包含以下常见问题：
+ *   - 多余逗号（{"a":1,} -> {"a":1}）
+ *   - 单引号（{'a':'b'} -> {"a":"b"}）
+ *   - 未引号键（{a:1} -> {"a":1}）
+ *   - 注释（// 或 slash-star-star-slash）
+ *   - 尾部多余字符
+ * @param raw - 原始 JSON 字符串
+ * @returns 修复后的字符串，或 undefined（无法修复）
+ */
+function tryFixJson(raw: string): string | undefined {
+  let s = raw.trim()
+  if (!s.startsWith('{')) return undefined
 
-/** 链名标签 → ChainKind（容错：中文/中文带"链"后缀/英文 kind，大小写不敏感） */
-function kindOfLabel(label: string): ChainKind | undefined {
-  const s = label.trim().toLowerCase()
-  if (s === 'null') return undefined
-  const table: Record<string, ChainKind> = {
-    '因果': 'causal', '因果链': 'causal',
-    '逻辑': 'logic', '逻辑链': 'logic',
-    '操作': 'operation', '操作链': 'operation',
-    '叙事': 'narrative', '叙事链': 'narrative',
-    '时间': 'temporal', '时间链': 'temporal',
+  // 1) 移除单行注释（// 到行尾）
+  s = s.replace(/\/\/.*$/gm, '')
+  // 2) 移除多行注释
+  s = s.replace(/\/\*[\s\S]*?\*\//g, '')
+  // 3) 单引号 -> 双引号
+  s = s.replace(/'/g, '"')
+  // 4) 未引号键：{key:value} -> {"key":value}
+  s = s.replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":')
+  // 5) 移除多余逗号（在 } 或 ] 前）
+  s = s.replace(/,(\s*[}\]])/g, '$1')
+
+  // 尝试解析
+  try {
+    JSON.parse(s)
+    return s
+  } catch {
+    return undefined
   }
-  const bare = s.endsWith('链') ? s.slice(0, -1) : s
-  const hit = table[s] ?? table[bare]
-  return hit ?? ((CHAIN_KINDS as readonly string[]).includes(s) ? (s as ChainKind) : undefined)
 }
 
-/** 归一化置信度：>1 视为百分数（78 → 0.78），钳制 (0,1] */
-function normalizeConfidence(n: number): number | undefined {
-  if (!Number.isFinite(n) || n <= 0) return undefined
-  return Math.min(n > 1 ? n / 100 : n, 1)
+/** 置信度括注正则：（置信度78%）/ (把握度 60%) /（可信度九成不认，只认数字百分比） */
+const CONFIDENCE_RE = /[（(]\s*(?:置信度|把握度|可信度)\s*(\d{1,3})\s*%\s*[）)]/
+
+/**
+ * 从文本括注提取置信度（6.4 数据模型）：
+ *   "需求失控（置信度78%）" -> 0.78；无合规括注 -> undefined。
+ * 内容本身保留括注（信息无损），confidence 是结构化副本。
+ */
+export function confidenceOf(text: string): number | undefined {
+  const m = text.match(CONFIDENCE_RE)
+  if (!m) return undefined
+  const n = Number(m[1])
+  if (Number.isNaN(n) || n <= 0) return undefined
+  return Math.min(n / 100, 1)
 }
 
 /**
  * 解析文本末尾的 JSON 快照行。
  *
- * 只认**最后一个非空行**且形如 `{...}` 的行（协议约定快照在正文最末尾，
+ * 只认最后一个非空行且形如 {...} 的行（协议约定快照在正文最末尾，
  * 正文中间出现的 JSON 不属于本通道）。
  *
  * @returns
- *   - undefined：无快照行 / 格式错误 / 链名非法（**整行丢弃**）
+ *   - undefined：无快照行 / 格式错误 / 链名非法（整行丢弃）
  *   - null：明确声明无主链（{"chain":"null"}）
  *   - ChainSnapshot：有效快照（nodes 只含合法角色且值形态合法的条目）
  */
@@ -92,19 +99,39 @@ export function parseSnapshot(text: string): ChainSnapshot | null | undefined {
     const t = lines[i].trim()
     if (t) { last = t; break }
   }
-  if (!last.startsWith('{') || !last.endsWith('}')) return undefined
+  if (!last.startsWith('{') || !last.endsWith('}')) {
+    recordSnapshotAttempt(false, 'not-json-line', last)
+    return undefined
+  }
 
   let obj: unknown
   try {
     obj = JSON.parse(last)
   } catch {
-    return undefined // 格式乱 → 丢弃
+    // 首次解析失败 -> 尝试修复常见 JSON 错误（8.6 容错层）
+    const fixed = tryFixJson(last)
+    if (fixed === undefined) {
+      recordSnapshotAttempt(false, 'parse-error', last)
+      return undefined
+    }
+    try {
+      obj = JSON.parse(fixed)
+    } catch {
+      recordSnapshotAttempt(false, 'parse-error-after-fix', last)
+      return undefined
+    }
   }
-  if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) return undefined
+  if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) {
+    recordSnapshotAttempt(false, 'not-object', last)
+    return undefined
+  }
 
   const chainRaw = (obj as { chain?: unknown }).chain
   if (typeof chainRaw !== 'string') return undefined
-  if (chainRaw.trim().toLowerCase() === 'null') return null
+  if (chainRaw.trim().toLowerCase() === 'null') {
+    recordSnapshotAttempt(true, 'null-chain')
+    return null
+  }
 
   const chain = kindOfLabel(chainRaw)
   if (!chain) return undefined
@@ -115,7 +142,7 @@ export function parseSnapshot(text: string): ChainSnapshot | null | undefined {
   if (typeof nodesRaw === 'object' && nodesRaw !== null && !Array.isArray(nodesRaw)) {
     for (const [key, value] of Object.entries(nodesRaw as Record<string, unknown>)) {
       const role = ROLE_BY_KEY[key]
-      // 容错：键不在角色表 / 键不属于该链角色 / 值形态非法 → 丢弃该条目
+      // 容错：键不在角色表 / 键不属于该链角色 / 值形态非法 -> 丢弃该条目
       if (!role || !legalRoles.has(role)) continue
       const nv = toNodeValue(value)
       if (nv) nodes[role] = nv
@@ -138,10 +165,11 @@ export function parseSnapshot(text: string): ChainSnapshot | null | undefined {
     }
   }
 
+  recordSnapshotAttempt(true)
   return { chain, nodes, supersede, raw: last }
 }
 
-/** 快照条目值 → SnapshotNodeValue（容错校验：字符串或 {value|ai|user} 对象） */
+/** 快照条目值 -> SnapshotNodeValue（容错校验：字符串或 {value|ai|user} 对象） */
 function toNodeValue(v: unknown): SnapshotNodeValue | undefined {
   if (typeof v === 'string') {
     const t = v.trim()
@@ -170,6 +198,37 @@ function toNodeValue(v: unknown): SnapshotNodeValue | undefined {
   return out
 }
 
+/** 链名标签 -> ChainKind（容错：中文/中文带"链"后缀/英文 kind，大小写不敏感） */
+function kindOfLabel(label: string): ChainKind | undefined {
+  const s = label.trim().toLowerCase()
+  if (s === 'null') return undefined
+  const table: Record<string, ChainKind> = {
+    '因果': 'causal', '因果链': 'causal',
+    '逻辑': 'logic', '逻辑链': 'logic',
+    '操作': 'operation', '操作链': 'operation',
+    '叙事': 'narrative', '叙事链': 'narrative',
+    '时间': 'temporal', '时间链': 'temporal',
+  }
+  const bare = s.endsWith('链') ? s.slice(0, -1) : s
+  const hit = table[s] ?? table[bare]
+  return hit ?? ((CHAIN_KINDS as readonly string[]).includes(s) ? (s as ChainKind) : undefined)
+}
+
+/** 归一化置信度：>1 视为百分数（78 -> 0.78），钳制 (0,1] */
+function normalizeConfidence(n: number): number | undefined {
+  if (!Number.isFinite(n) || n <= 0) return undefined
+  return Math.min(n > 1 ? n / 100 : n, 1)
+}
+
+/** 快照 nodes 中文键 -> ChainRole（与 ROLE_BY_KIND 表层角色一一对应） */
+const ROLE_BY_KEY: Record<string, ChainRole> = {
+  '问题': 'problem', '原因': 'cause', '方案': 'solution',
+  '前提': 'premise', '推理': 'reasoning', '结论': 'conclusion',
+  '动作': 'action', '步骤': 'step', '结果': 'result',
+  '开端': 'beginning', '发展': 'development', '转折': 'twist', '结局': 'ending',
+  '过去': 'past', '现在': 'present', '未来': 'future',
+}
+
 /** 剥离末尾快照行（INJECT 前清理 / 锚点通道提取前清理，JSON 不回灌不混入节点内容） */
 export function stripSnapshotLine(text: string): string {
   const lines = text.split('\n')
@@ -193,7 +252,7 @@ function nextRootOf(graph: ChainGraph, kind: ChainKind): number {
   return max + 1
 }
 
-/** 某根链下已有子节点的最大末段号（决定补漏节点的 path；含修正后缀 ′ 不影响取号） */
+/** 某根链下已有子节点的最大末段号（决定补漏节点的 path；含修正后缀 不影响取号） */
 function nextSeqOf(graph: ChainGraph, kind: ChainKind, root: number): number {
   const prefix = `${kind}@${root}.`
   let max = 0
@@ -211,13 +270,13 @@ type SnapEntry = [ChainRole, SnapshotNodeValue]
 /**
  * 双通道融合：把有效快照合并进链图（锚点为主、快照补漏）。
  *
- *   - supersede 声明 → 先执行链级回溯（废旧根链保留为负向锚点），nodes 走新链建图
- *   - 该 kind 无活跃根链（模型只写了快照没打锚点 / 刚 supersede）→ 整链建图
- *   - 已有活跃根链 → 只补缺失角色的节点；锚点已提取的角色**不覆盖**
+ *   - supersede 声明 -> 先执行链级回溯（废旧根链保留为负向锚点），nodes 走新链建图
+ *   - 该 kind 无活跃根链（模型只写了快照没打锚点 / 刚 supersede）-> 整链建图
+ *   - 已有活跃根链 -> 只补缺失角色的节点；锚点已提取的角色不覆盖
  *     （锚点是演化决策者，快照是终态便签纸；分歧走 diverged 并行而非覆盖）
- *   - diverged 条目（ai/user）→ fork 节点对并行记录；converged（value+from）
- *     → 单节点 + convergedFrom 继承标记；confidence 附着到节点
- *   - 目标根链已 end/superseded（收束）→ 补漏丢弃（忠实"此后该链不再变化"）
+ *   - diverged 条目（ai/user）-> fork 节点对并行记录；converged（value+from）
+ *     -> 单节点 + convergedFrom 继承标记；confidence 附着到节点
+ *   - 目标根链已 end/superseded（收束）-> 补漏丢弃（忠实"此后该链不再变化"）
  *
  * @returns 快照成功入库的模拟锚点（供日志计数；stub 不计）
  */
@@ -259,17 +318,30 @@ export function mergeSnapshotIntoGraph(
     toAdd = entries
     buildNewChain = true
   } else {
-    // 补漏到最新根：锚点已有该角色（内容非空）→ 跳过（快照不覆盖锚点）
+    // 补漏到最新根：已有节点不覆盖 value/ai/user 核心内容，
+    // 但允许刷新 confidence 元数据（便签纸可贴新把握度标签，
+    // 不违反"分歧走 diverged 并行而非覆盖"——diverged 是内容分歧，
+    // confidence 是元数据刷新）。
+    // 让置信度趋势预警的跨轮次观察路径可达（修复设计缺口）。
     root = Number(roots[roots.length - 1].id.split('@')[1])
     seq = nextSeqOf(graph, snapshot.chain, root)
     const rootKey = `${snapshot.chain}@${root}`
-    const existing = new Set(
+    // 按 role 索引已有节点（便于刷新 confidence 元数据）
+    const existingByRole = new Map(
       graph.activeNodes()
         .filter((n) => n.kind === snapshot.chain && n.content)
         .filter((n) => n.id.split('.')[0].replace(/′$/, '') === rootKey)
-        .map((n) => n.role),
+        .map((n) => [n.role, n] as const),
     )
-    toAdd = entries.filter(([role]) => !existing.has(role))
+    // 元数据刷新：已有节点仅更新 confidence（不覆盖核心内容）
+    for (const [role, value] of entries) {
+      if (value.confidence === undefined) continue
+      const existing = existingByRole.get(role)
+      if (existing && existing.confidence !== value.confidence) {
+        existing.confidence = value.confidence
+      }
+    }
+    toAdd = entries.filter(([role]) => !existingByRole.has(role))
     if (toAdd.length === 0) return merged
     buildNewChain = false
   }

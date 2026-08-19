@@ -38,5 +38,13 @@ check('结构完整（序言/图鉴/法则/快照/豁免/示例/纪律）',
   ['序言', '五链图鉴', '融合法则', '末尾快照', '认知豁免权', '示例', '纪律'].every(s => CHAIN_PROTOCOL_SECTION.includes(s)))
 check('无空行溢出', CHAIN_PROTOCOL_SECTION.split('\n').length > 10)
 
+console.log('== 操作链触发协议（透明入口）==')
+check('含操作链触发协议段落', CHAIN_PROTOCOL_SECTION.includes('操作链触发协议'))
+check('含透明入口声明', CHAIN_PROTOCOL_SECTION.includes('透明入口'))
+check('含动作对象+执行范围声明格式', CHAIN_PROTOCOL_SECTION.includes('我理解为'))
+check('禁止以问号结尾', CHAIN_PROTOCOL_SECTION.includes('禁止：以问号结尾'))
+check('含步骤自动作废规则', CHAIN_PROTOCOL_SECTION.includes('自动作废'))
+check('含情绪水位联动', ['情绪水位联动', '高水位（焦虑/急切）时声明可更短'].every(s => CHAIN_PROTOCOL_SECTION.includes(s)))
+
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`)
 process.exit(fail > 0 ? 1 : 0)

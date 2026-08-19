@@ -19,7 +19,9 @@
       "@deepseek-ai/schemastery": ["D:/Git/github/deepseek-harness-master/vendor/schemastery"],
       "@deepseek-ai/dsh-llm": ["D:/Git/github/deepseek-harness-master/packages/llm/llm"],
       "@deepseek-ai/dsh-agent": ["D:/Git/github/deepseek-harness-master/packages/core/agent"],
-      "@deepseek-ai/dsh-session": ["D:/Git/github/deepseek-harness-master/packages/core/session"]
+      "@deepseek-ai/dsh-session": ["D:/Git/github/deepseek-harness-master/packages/core/session"],
+      "@deepseek-ai/dsh-tools": ["D:/Git/github/deepseek-harness-master/packages/core/tools"],
+      "@deepseek-ai/dsh-system-prompt": ["D:/Git/github/deepseek-harness-master/packages/core/system-prompt"]
     }
   },
   "include": ["src", "scripts"]

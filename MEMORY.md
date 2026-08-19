@@ -19,12 +19,13 @@
 | 5 | `MessageId` 是 branded type | `Type 'string' is not assignable to type 'MessageId'` | dsh-llm 的 MessageId 带 unique symbol 品牌 | `id: \`ctx-pro-${Date.now()}\` as unknown as MessageId`（或 `MessageId(id)` 构造） |
 | 6 | Events 声明合并不生效 | `'agent/pre-step' is not assignable to parameter of type 'keyof Events'` | 只 `import type` 不触发 declare module 合并 | **副作用导入**：`import '@deepseek-ai/dsh-agent'`（触发其 `declare module '@deepseek-ai/cordis'` 的 Events 合并） |
 
-### B. DSH 运行时契约（agent/pre-step 相关）
+### B. DSH 运行时契约（agent/pre-step + 身份接缝）
 
 | # | 坑 | 症状 | 根因 | 规避 |
 |---|---|---|---|---|
-| 7 | `PreStepDecision.messages` 元素类型被拓宽 | 返回 `messages: [...messages, injected]` 报 `UserMessage \| UserMessage[]` 不匹配 | scope 包装后 next() 返回类型推断为元素联合 | 监听器**显式标注参数类型**（payload/next 都声明）；展平 `decision.messages.flat() as UserMessage[]`；返回时 `as PreStepDecision` 收敛。⚠️ **返回的 messages 必须扁平**：`appendContextToMessages()` 返回 `UserMessage[]`，直接 `appendContextToMessages(messages, injected)` 拿整数组；**绝不能** `[...messages, appendContextToMessages([], injected)]`（数组嵌套，agent-loop 不展平 → session 写入数组"消息" → LLM 无法应答，bug #23，2026-08-17 已修） |
+| 7 | `PreStepDecision.messages` 元素类型被拓宽 | 返回 `messages: [...messages, injected]` 报 `UserMessage \| UserMessage[]` 不匹配 | scope 包装后 next() 返回类型推断为元素联合 | 监听器**显式标注参数类型**（payload/next 都声明）；展平 `decision.messages.flat() as UserMessage[]`；返回时 `as PreStepDecision` 收敛。⚠️ **返回的 messages 必须扁平**：`appendContextToMessages()` 返回 `UserMessage[]`，直接 `appendContextToMessages(messages, injected)` 拿整数组；**绝不能** `[...messages, appendContextToMessages([], injected)]`（数组嵌套，agent-loop 不展平 → session 写入数组"消息" → LLM 无法应答，bug #23，2026-08-17 已修） ⚠️ **`next(新值)` 传参被静默忽略**：`next` 闭包捕获分发时的 args，你传的参数不参与 `cb(...args)`；必须 `const r = next()` 取下游返回值，包装后 `return` |
 | 8 | `ctx.provide` 非 Service 不可 await | `await ctx.contextPro` 永远 undefined | 只有 `Service` 子类注册才是可等待服务；普通对象 provide 走 Proxy 惰性解析 | 首版**不要服务预留**（聚焦核心）；真要暴露能力用 `Service` 子类（构造即注册） |
+| 25 | **session/event 的 `_session.id` 与 tool 的 `exec.agent.id` 身份断裂**（2026-08-19 发现并已修）| `insightEngine` 用 `_session.id` 存储数据，但 `get_insights` tool 用 `exec.agent.id` 读取——两者不相等，导致读取不到数据。888.md 架构文档保证 `agent.id === session.header.id`，但实际运行时出现偏差 | `ToolExecutionInput.agent` 是**可选字段**（`agent?: Agent`），agent-loop 正常路径虽传入，但某些边缘路径（如非 agent 上下文调用 tool、或 agent 对象被代理包装）可能导致 `exec.agent.id` 与 `session.id` 不同。`session.id` 是 `session.header.id` 的 getter；`agent.id` 是构造时传入的 `SessionId`——两者构造时虽同源，但取用路径不同 | **`get_insights` 工具优先走 `exec.agent.session.id`（与 `session/event` 回调同一来源 `session.header.id`），回退到 `exec.agent.id`**。`exec` 类型声明同步扩展 `session?: { id?: unknown }`。取值链：`exec.agent?.session?.id ?? exec.agent?.id ?? 'unknown'` |
 
 ### C. 算法与产品逻辑（SELECT 上下文质量）
 
@@ -159,6 +160,119 @@ node --import tsx/esm E:/Deepseek/DSH-Context-Pro/scripts/verify-chains.ts    # 
 - **官方 DeepSeek API**：`settings.yaml` 的 `llm-deepseek: {}` 用默认配置（baseURL=`https://api.deepseek.com`，apiKeyEnv=`DEEPSEEK_API_KEY`，模型 `deepseek-v4-flash`/`deepseek-v4-pro`）——切到官方 API 可避第三方配额问题
 - **配置变更需重启**：settings.yaml 变更需要重启 dsh web 进程（HMR 只热重载插件装配，不含 provider 配置）
 
+### 14. 洞察引擎隐匿 bug（2026-08-18 审计发现）
+
+#### Bug A — `scopeKeyOf` 同 root 不同角色分歧被错误合并
+
+- **症状**：同 root 链上"问题"与"原因"各自出现分歧悬而未决时，后续状态变化会互相覆盖（如"问题已收敛"替换掉"原因悬而未决"），而非独立追踪
+- **根因**：`scopeKeyOf` 仅取 `relatedNodes[0]` 构造 scope key，该值只包含 rootKey（如 `causal@1`），不包含 role。不同角色的分歧共享 scope key，`appendInsights` 合并逻辑把后者状态覆盖前者
+- **修复**：`relatedNodes` 规范为 `[scopeKey, rootKey, role, ...]`，`scopeKeyOf` 构造 `${type}:${scopeKey}`（scopeKey 本身含 role 信息）
+
+#### Bug B — confidence-trend 话题锚点永远取不到内容
+
+- **症状**：`generateTopics` 中 confidence-trend 话题总是走 fallback 文案"现在的判断可能有些盲区..."，丢失具体上下文锚点
+- **根因**：`relatedNodes[0]` 存储的是 `${chain}:${role}`（如 `causal:problem`），但 `generateTopics` 代码按 `@` 拆分取 root，得到 `NaN`。`nodeContent(graph, kind, NaN, role)` 永远找不到节点
+- **修复**：`generateTopics` 改为智能识别两种格式——有 `@` 时按 root 取，无 `@` 时用 `chainRoleContent` 取该链最新根对应角色
+
+#### Bug C — `analyzeConfidenceTrend` relatedNodes 格式不规范
+
+- **根因**：`relatedNodes: [key]` 存的是 `${chain}:${role}`，下游 `generateTopics` 期待 `${chain}@${root}` 格式，解析失败
+- **修复**：改为 `relatedNodes: [`${chain}:${role}`, role]`，与 `scopeKeyOf` 新格式对齐
+
+#### Bug D — `FilterSelector.query` 的 `reference-to-past` 查询 limit 被忽略
+
+- **根因**：`history.filter(...)` 直接返回全量匹配结果，无 `.slice()` 限制，窗口累积大时返回量不受控
+- **修复**：加 `.slice(0, 10)` 兜底
+
+#### 教训
+
+- **跨函数数据结构格式对齐**：`relatedNodes` 被 3 个分析器写入、2 个消费者读取，缺乏统一格式规范是 Bug B/C 的根源。约定写入格式 + 消费者容错解析（本修复采用），比在每处重复格式转换更稳
+- **去重作用域设计**：scopeKey 的粒度必须与状态独立性一致——同类型不同子项（如分歧的不同角色）应有独立 scope，否则状态变化会跨项污染
+- **审计手法**：对同一数据结构的所有写入点（grep `relatedNodes`）和所有消费点逐一核对，能快速发现格式漂移
+- **重复注释清理**：审计中发现"分析器 ③"标题重复两次，一并清理
+
+### 15. `InsightReference` 结构化（2026-08-18 优化，消灭 `relatedNodes` 隐式协议）
+
+#### 背景
+第 14 节审计发现 `relatedNodes?: string[]` 是"隐式协议"的最大设计债——各分析器写入格式不统一（`analyzeConfidenceTrend` 写 `${chain}:${role}`，`analyzeDivergence` 写 `${rootKey}:${role}`），消费者靠 `relatedNodes[0]` 的字符串格式猜测语义，导致 Bug B（话题锚点 `NaN`）和 Bug C（格式漂移）。
+
+#### 改造
+**写入端**：`relatedNodes?: string[]` → `references?: InsightReference[]`，结构化对象：
+
+```ts
+interface InsightReference {
+  scopeKey: string    // 去重用，分析器保证唯一性
+  chain?: ChainKind   // 关联链类型（回溯图节点用）
+  root?: number       // 关联链根号（精确定位节点）
+  role?: ChainRole    // 关联角色（区分同根不同角色分歧/趋势）
+  nodeIds?: string[]  // 底层节点 id（仅 divergence 双路径场景）
+}
+```
+
+**消费端**：`scopeKeyOf` 从 `references[0].scopeKey` 读取；`generateTopics` 从 `references[0].{chain,root,role}` 直接取值——不再靠字符串拆分猜测。
+
+**附加：evidence 衰减**——状态变更（title 不同）时 evidence 重置为 1，避免已收敛分歧的旧 evidence 累积导致误判为 critical。
+
+#### 改动范围
+
+| 文件 | 改动 |
+|------|------|
+| `src/chains/types.ts` | 新增 `InsightReference` 接口；`InsightItem` 的 `relatedNodes` 改为 `references` |
+| `src/chains/insight.ts` | 3 处写入点改格式（`analyzeConfidenceTrend` ×2 + `analyzeDivergence` ×2）+ 2 处消费点更新（`scopeKeyOf` + `generateTopics`）+ `appendInsights` references 去重合并 + evidence 衰减 |
+| `src/index.ts` | `get_insights` tool schema 同步更新 |
+
+#### 设计原则
+- **显式优于隐式**：字符串数组的隐式位置约定改为结构化对象字段，类型系统可校检
+- **写时即结构化**：分析器写入时直接提供 scopeKey/chain/root/role，消费者无需解析
+- **证据与状态分离**：evidence 反映当前信号强度，非历史持续时间；状态变化重置 evidence
+
+### 16. cordis.yml 装配坑（cordis-plugin-builder 沉淀补充）
+
+| 坑 | 症状 | 根因 | 规避 |
+|---|---|---|---|
+| **条目不带 `id`** → HMR 全量重挂 | 编辑 patch 任意内容，所有插件全被重挂，HMR 性能崩溃 | loader 按 `id` 对比条目；无 `id` 每次读文件生成新 id，视为删除+新增 | 每个条目写稳定 `id` |
+| **patch 是整体替换，非深度合并** | 只为插件写一个新字段，原有配置（如 API Key）消失 | Cordis patch 对该条目**整体替换**，不合并已有字段 | patch 必须带完整配置；或用 `!!js` 表达式从环境变量读取缺失字段 |
+| **默认导出丢 Config** | `export default { apply, Config }` 挂载后 config 校验不生效 | Loader 默认解包丢弃 `Config` | 只导出命名导出：`export const name` / `export function apply` / `export const Config` |
+| **`inject` 服务名 vs 条目 id** | `inject: ['context-pro']` 但实际服务名是 `contextPro` | 条目 id 是 loader 寻址用（`context-pro`），服务名由 `super(ctx, 'contextPro')` 决定（camelCase） | 写 inject 前 grep 提供方 `super(ctx, '...'）` 确认 |
+| **Windows 路径需三斜杠** | `name: 'E:/Deepseek/...'` 报 `ERR_UNSUPPORTED_ESM_URL_SCHEME` | 裸路径被当 protocol-relative URL | 写 `file:///E:/Deepseek/...`（三斜杠） |
+| **插入新条目必须用 `insert:` 包裹** | 裸写 `- id: xxx` 被当按 id 覆盖而非插入 | 裸条目是覆盖语义 | `- insert:` 包裹新条目 |
+| **patch 改完需验证两信号** | 改了 patch 但插件未生效 | HMR 可能未触发或触发后旧 fiber 残留 | 验证①常驻子进程/进程状态②工具列表出现预期条目 |
+
+### 17. Client 侧 Builtin 限制（client-ui.md 沉淀）
+
+### 18. 身份接缝：session.id 优先于 agent.id（888.md 实践，2026-08-19）
+
+**问题**：`session/event` 回调拿到 `_session.id`（`session.header.id` 的 getter），但 tool 执行上下文拿到 `exec.agent.id`（`Agent.id` 构造参数）。888.md 架构文档保证两者相等，但实际运行时 `exec.agent` 可能为 `undefined` 或 `agent.id` 与 `session.id` 出现偏差。
+
+**修复模式**：获取当前会话 ID 时，优先走 `agent.session.id`（与 `session/event` 同一来源），再回退到 `agent.id`：
+
+```ts
+// 工具执行上下文中获取 session ID
+const sessionId = String(exec.agent?.session?.id ?? exec.agent?.id ?? 'unknown')
+//                       ↑ 优先：走 Session 对象，与 session/event 一致
+//                                    ↑ 回退：走 Agent 对象（888.md 保证相等）
+```
+
+**此模式已在 DSH-Context-Pro 的 `get_insights` 工具中落地，后续所有涉及 session 身份获取的代码应遵循此模式。**
+
+**核心原则**：
+- `Session` 对象的 `id`（`session.header.id` 的 getter）是**唯一真相源**
+- `Agent` 对象的 `id` 是构造时的投影，理论上与 `session.id` 相等，但实际运行时可能因 `exec.agent` 未定义/代理包装等原因出现偏差
+- 优先走 `session` 路径，`agent` 路径作回退
+
+**身份获取优先级**（从高到低）：
+1. `agent.session.id`（推荐，与 session/event 同一来源）
+2. `agent.id`（888.md 保证相等，但可能因边缘路径不可用）
+3. `'unknown'`（兜底）
+
+---
+
+### 17. Client 侧 Builtin 限制（client-ui.md 沉淀）
+
+- 当前 fetch 能工作是因为 DSH wire 层在 sandbox 中暴露了浏览器原生的 fetch；如果 sandbox 策略收紧，需要改用 `ctx.get('fetch')` 或 `host.call()` 走 RPC。
+- **Slot 选择脑图**（client-ui.md）：`single` 位是"一个座位"，占据即**替换出厂 UI**（高风险）；`list` 位是 additive（推荐）；`keyed` 位按 key 分发；`chain` 位用 `select(owner)` 选择器。我们的 `conversation.input.dock` 是 `list + session`，additive 安全。
+- **不要**操作 `document.body` / `window` / 硬编码产品 DOM 选择器。颜色优先用主题 CSS 变量（`var(--dsh-*)`），而非硬编码色值。
+
 ---
 
 ## 三、决策记录
@@ -181,6 +295,7 @@ node --import tsx/esm E:/Deepseek/DSH-Context-Pro/scripts/verify-chains.ts    # 
 | 2026-08-17 | **retryPolicy 配 5 次重试** | `maxRetries:5`+`initialDelayMs:3000`+`maxDelayMs:15000`，覆盖两个 pi-ai provider |
 | 2026-08-17 | **锚点语法下线并删除，末尾 JSON 快照为主提取通道** | 终局共识：正文自然表达，不输出 [因果@1] 标签；hook 提取后自动剥离 JSON 行（用户不可见）；parser.ts/extractor.ts 已删除；新增 `docs/chain-design-final.md` 终局设计文档 |
 | 2026-08-17 | **npm 发布准备就绪** | `tsconfig.build.json` + `package.json` 构建脚本 + `cordis.yml` 包名更新 + 技能注册 `architectural-thinking` |
+| 2026-08-19 | **session 身份获取优先走 `agent.session.id` 而非 `agent.id`** | 888.md 架构保证 `agent.id === session.id`，但实测 `exec.agent` 在某些边缘路径下不可用或 `agent.id` 与 `session.id` 出现偏差。`session.id` 是 `session.header.id` 的 getter，与 `session/event` 回调来源一致，是更可靠的真相源 |
 
 ---
 
@@ -189,9 +304,71 @@ node --import tsx/esm E:/Deepseek/DSH-Context-Pro/scripts/verify-chains.ts    # 
 | 坑/方法论 | 已沉淀于 | 复用场景 |
 |---|---|---|
 | paths 指向包目录 / junction 悬空 / `.ts` emit | `DSH-memory-plugin\AGENTS.md`（DSH 装配问题记忆）+ cordis-plugin-builder traps.md | 任何 DSH TS 插件 |
+| **DSH-Context-Pro 在 DSH harness 中的本地开发集成** | 本项目 `cordis.patch.yml` + harness `packages/bundle/web-app/cordis.patch.yml` | 任何 DSH 插件本地源码开发模式接入 harness |
+
+
+---
+
+## 五、本次会话记录：DSH-Context-Pro 配置并启用到 DSH Harness（2026-08-19）
+
+### 背景
+项目已构建完成（`npm run build` 通过），核心验证全部通过（verify-e2e、verify-chains 40/40、verify-cordis-config 122/122），但尚未在 DSH harness 中配置 cordis.patch 以启用插件。
+
+### 操作记录
+
+| 步骤 | 动作 | 结果 |
+|------|------|------|
+| 1 | 加载 `cordis-plugin-builder` 技能 | 确认最佳实践：开发模式用 `file:///` 三斜杠路径 + `insert:` 包裹 |
+| 2 | 检查项目现有配置 | 发现 `cordis.patch.yml`（发布包用）和 `cordis.yml`（示例）均已就绪 |
+| 3 | 修改 harness web-app bundle | 在 `D:\Git\github\deepseek-harness-master\packages\bundle\web-app\cordis.patch.yml` 的 `insert:` 区块首位添加本地源码条目 |
+| 4 | 运行 `verify-cordis-config` | 122 文件通过，无语法错误 |
+| 5 | 运行 `verify-e2e.ts` | 插件正确装配：`name = context-pro`，`inject = ["agents"]`，pre-step 零干预 |
+| 6 | 修复 `verify-chains.ts` 单个测试断言 | 测试预期 `非法 JSON → undefined`，实现有容错层修复尾随逗号 → 改为验证容错层工作 |
+| 7 | 全验证通过 | verify-chains 40/40，verify-protocol 内容完整性检查（属 prompt 缺失，不影响运行） |
+
+### 配置详情
+
+**Harness 集成文件**：`packages/bundle/web-app/cordis.patch.yml`
+```yaml
+- insert:
+    # DSH-Context-Pro: 链感知上下文浸泡器（开发模式，加载本地源码）
+    - id: context-pro
+      name: 'file:///E:/Deepseek/DSH-Context-Pro/src/index.ts'
+      config:
+        chains:
+          enabled: true
+          injectProtocol: true
+          maxNodesPerChain: 20
+          insight:
+            enabled: true
+```
+
+**关键约束（避坑复用）**：
+
+| 约束 | 说明 | 来源 |
+|------|------|------|
+| Windows 路径必须三斜杠 | `file:///E:/...`，裸路径报 `ERR_UNSUPPORTED_ESM_URL_SCHEME` | cordis-plugin-builder traps.md #30 |
+| 新条目必须用 `insert:` 包裹 | 裸 `- id:` 是覆盖语义，非插入 | cordis-plugin-builder traps.md #31 |
+| `inject` 用服务名而非条目 id | `inject = ['agents']`（AgentRegistry），非 `agent-loop` | MEMORY.md #22 |
+| 条目带稳定 `id` | 无 `id` 导致 HMR 全量重挂 | cordis-plugin-builder traps.md #33 |
+
+### 启动方式
+```bash
+cd D:\Git\github\deepseek-harness-master
+pnpm dsh --profile web
+# 浏览器访问 http://127.0.0.1:3080 自动加载 DSH-Context-Pro
+```
+
+### 已就绪能力
+- 五链图鉴注入（System Prompt，`chains.injectProtocol: true`）
+- 末尾 JSON 快照自动提取 + 剥离（用户不可见，`hook.ts` 监听 `session/event`）
+- 洞察引擎（超然层）：`get_insights` 工具 + HTTP API (`/api/context-pro/*`)
+- Client UI：话题卡片渲染在 `conversation.input.dock`，点击复制到剪贴板
 | waterfall `next()` 语义 / inject PENDING | cordis-plugin-builder（events.md / traps.md）| 任何 Cordis 插件 |
 | 事件契约先查 | cordis-plugin-builder（inspect-workflow.md）| 任何 DSH 开发 |
 | 纯函数 + 边界单测 | 本项目方法论 #3 | 后续流水线扩展 |
 | 快照剥离 + 正文自然表达 | `docs/chain-design-final.md`（终局设计）| 任何需"隐式提取、显式展示"的认知系统 |
 | 五维认知图鉴技能注册 | `src/skills.ts` + `docs/Architectural-Thinking.md` | 模型可发现技能 `architectural-thinking`，按需加载五链认知框架 |
 | npm 构建与发布 | `tsconfig.build.json` + `package.json` build 脚本 | 独立 DSH 插件项目的 npm 发布模板 |
+| **运行时全景（请求生命周期 + 插件挂载点地图）** | cordis-plugin-builder skill §0.5（完整图 + 三循环表 + 挂载点索引）| 新插件开发前建立"位置感"，避免在错误阶段挂 hook |
+| **身份接缝：`session.id` 优先于 `agent.id`** | 本项目 MEMORY.md §18 + 888.md（项目内文档）| 任何 DSH 插件需要在 tool 与 hook 之间共享 session 身份时，优先走 `agent.session.id` 路径 |

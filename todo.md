@@ -49,7 +49,7 @@
 - [x] 5.10 `docs/chain-guide.md`：链感知使用与架构指南（配置/五链/快照协议/最佳实践/边界）
 - [x] 5.11 `src/skills.ts`：AGENTS.md + CLAUDE.md + Architectural-Thinking.md 注册为技能（`agent-principles` / `api-contract-guide` / `architectural-thinking`）
 - [x] 5.12 装配进 DSH web profile：`cordis.patch.yml` 写入 chains.enabled=true + injectProtocol=true，HMR 热加载生效
-- [ ] P2 装配进 DSH profile 实测（chains.enabled + injectProtocol 真实循环）
+- [x] P2 装配进 DSH profile 实测（chains.enabled + injectProtocol 真实循环）——2026-08-19 完成：harness `packages/bundle/web-app/cordis.patch.yml` 添加 `file:///E:/Deepseek/DSH-Context-Pro/src/index.ts`，verify-cordis-config 122/122 通过，verify-e2e PASS，verify-chains 40/40
 
 ## 阶段 6：终局对齐（依据 `设计方案与规划.md` 终局共识 → `docs/chain-design-final.md`）
 
@@ -114,3 +114,100 @@
 | 2026-08-17 | P4 脉络导览：三层记录法第一层落地（headline GPS + track 轨道图 + gaps 缺口）；废链/收束链不报缺口（无闭环义务）不选主链；O.3 首版落点 = prestep MEASURE 日志 |
 | 2026-08-17 | **O.1–O.4 终局策略定稿"抗氧化涂层"**：不碰核心架构，轻量化包裹；上线初期全 Mock/关闭，先通后优；各对齐项角色=哨兵/备胎/裁判/保镖；实测出痛点再定向对齐（工程"先通后优"，认知"先简后深"） |
 | 2026-08-17 | **bug #22 修复**：inject 服务名 `agent-loop`→`agents`（混淆 cordis.yml 条目 id 与 `super(ctx,'agentLoop')` 服务名致 fiber 永久 PENDING）；e2e 重做诚实断言（真实 AgentRegistry 供服务 + 注入块存在性校验），真实 boot `dsh web` 验证通过 |
+| 2026-08-19 | **bug #25 修复**：`session/event` 的 `_session.id` 与 tool 的 `exec.agent.id` 身份断裂——`get_insights` 工具优先走 `exec.agent.session.id`（与 `session/event` 同一来源），回退到 `exec.agent.id`；MEMORY.md 沉淀方法论 #18 + 坑 #25 + 决策记录 |
+
+---
+
+## 阶段 8：架构优化（2026-08-19 定稿，基于架构评估）
+
+> 基线：核心功能（图鉴注入 + JSON 快照提取 + 洞察引擎）已验证通过。
+> 本阶段聚焦**设计债清理**，不新增功能。每项须有回归测试覆盖。
+
+### P0 紧急（已修复）
+
+- [x] 8.0 **bug #25 身份断裂修复**：`get_insights` 工具 session ID 获取链改为 `exec.agent?.session?.id ?? exec.agent?.id ?? 'unknown'`；MEMORY.md 沉淀
+
+### P1 高优先级（架构债清理，已完成）
+
+- [x] 8.1 **拆分 `session/event` 监听器**（单一职责）
+  - 拆为 3 个独立监听器：① 胶水转换 + ingestEvent ② 链提取 + 洞察分析 ③ 话题便条注入
+  - 回归：tsc `--noEmit` 通过（src/ 零错误）
+
+- [x] 8.2 **消除 `session/event` 回调中直接修改事件数据的副作用**
+  - 话题便条改为 `agent.inject()` 发送独立用户消息，不修改已提交的 content 数组
+  - 通过 `ctx.agents.get(SessionId(sessionId))` 获取 agent 引用
+
+- [x] 8.3 **统一 session ID 获取逻辑**
+  - 新建 `src/session-id.ts`：`sessionIdFromEvent()` / `sessionIdFromExec()` / `toSessionId()` 三个工具函数
+  - hook.ts 和 index.ts 均使用统一工具函数
+  - HTTP 端点加 session ID 存在性校验
+
+- [x] 8.4 **`get_insights` tool 类型安全加固**
+  - 导入 `@deepseek-ai/dsh-tools` 的 `ToolDefinition` / `ToolRunContext` 接口
+  - `register` 参数约束为 `ToolDefinition`，`execute` 的 `exec` 参数约束为 `ToolRunContext`
+  - 使用 `satisfies ToolDefinition` 确保编译时校验
+
+### P2 中优先级（已完成）
+
+- [x] 8.5 **精简 section 内容**
+  - `CHAIN_PROTOCOL_SECTION` 从 ~90 行 / ~2000 tokens 精简为 ~25 行 / ~500 tokens
+  - 核心操作指令（快照格式、融合法则、纪律）保留；五链图鉴详情移至 `architectural-thinking` 技能
+  - 回归：tsc `--noEmit` 通过
+
+- [x] 8.6 **JSON 快照解析容错**
+  - 新增 `tryFixJson()` 函数：修复多余逗号、单引号、未引号键、注释、尾部多余字符等常见 JSON 错误
+  - `parseSnapshot()` 首次 `JSON.parse` 失败后自动尝试修复
+  - 回归：正常 JSON 快照仍正确解析 + 畸形 JSON 有容错 + 非 JSON 行仍跳过
+
+- [x] 8.7 **洞察引擎内存保护**
+  - 新增 `SessionAccessTracker` 类（LRU 淘汰策略）
+  - `InsightEngine` 和 `FilterSelector` 均加总会话数上限（`MAX_SESSIONS=100`）
+  - 超限时淘汰最旧不活跃会话，所有相关 Map 同步清理
+  - 回归：tsc `--noEmit` 通过
+
+### P3 低优先级（已完成）
+
+- [x] 8.8 **`registerChainProtocol` 类型安全**
+  - 导入 `@deepseek-ai/dsh-system-prompt` 的 `PromptSection` 接口，`(s: PromptSection)` 约束参数
+  - 回归：tsc `--noEmit` 通过
+
+- [x] 8.9 **`registerProjectSkills` 异步错误处理**
+  - 增加 `catch(reason => log.warn('技能注册失败:', reason))` 明确日志
+  - 函数签名增加 `logger` 参数，调用方传入 `ctx.logger`
+  - 回归：文件缺失时日志有明确警告，不崩溃
+
+- [x] 8.10 **`registerInsightHTTP` 端点校验**
+  - `GET /api/context-pro/topics` 加 sessionId 格式校验（非空、字母数字、最小长度 4）
+  - `POST /api/context-pro/mark-active` body 加类型校验（sessionId 必须是 string）
+  - 回归：无效请求返回 400 + 明确错误信息
+
+---
+
+## 阶段 9：可观测性增强（已完成）
+
+- [x] 9.1 **快照提取成功率监控**
+  - 新建 `src/metrics.ts`：`recordSnapshotAttempt()` 记录成功/失败 + 失败原因分布 + 最近 N 条失败详情
+  - `parseSnapshot()` 所有返回路径均调用记录（成功、null-chain、格式错误、解析失败等）
+  - 暴露 `GET /api/context-pro/stats` 返回全量指标
+
+- [x] 9.2 **链图健康度指标**
+  - `recordChainHealth()` 记录每轮：活跃链数、节点总数、superseded 节点数、ended 链数
+  - 保留最近 200 条历史，支持 `getChainHealthHistory(limit)` 和 `getChainHealthSummary()` 聚合
+  - 自动在 hook.ts 链提取后触发
+
+- [x] 9.3 **洞察引擎命中率统计**
+  - `recordInsightToolCall()` 记录 `get_insights` 工具调用次数和非空返回次数
+  - `recordTopicNoteTriggered()` 记录话题便条触发次数
+  - 全部暴露于 `GET /api/context-pro/stats`
+
+---
+
+## 阶段 10：可选对齐项（终局策略保持不变）
+
+> 原则：O.1–O.4 作为"抗氧化涂层"不碰核心架构，上线全 Mock/关闭。
+> 先通后优，实测出痛点再定向对齐。当前阶段 8–9 的架构优化完成后，才考虑进入 O.1–O.4。
+
+- [ ] O.1 Session 历史模式【哨兵】确保快照在模型"黄金视野区"
+- [ ] O.2 可替换 Selector【备胎】旁路评分器，非主宰者
+- [ ] O.3 可观测仪表【裁判】只看用户的"脚"，不听模型的"嘴"
+- [ ] O.4 Compaction 协同【保镖】压缩时死保 JSON 快照

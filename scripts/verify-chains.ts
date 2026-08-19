@@ -67,8 +67,10 @@ check('解析标准快照', snap1?.chain === 'causal' && Object.keys(snap1?.node
   `chain=${snap1?.chain}`)
 // 解析：未识别 → null
 check('未识别主链 → null', parseSnapshot('正文。\n{"chain":"null"}') === null)
-// 解析：格式错 → undefined（整行丢弃）
-check('非法 JSON → 丢弃', parseSnapshot('正文。\n{"chain":"因果链",}') === undefined)
+// 解析：格式错（尾随逗号）-> 8.6 容错层修复后成功解析
+const snapFix = parseSnapshot('正文。\n{"chain":"因果链",}')
+check('非法 JSON（尾随逗号）-> 容错修复解析', snapFix?.chain === 'causal' && Object.keys(snapFix?.nodes ?? {}).length === 0,
+  `chain=${snapFix?.chain}, nodes=${JSON.stringify(snapFix?.nodes)}`)
 // 解析：链名非法 → undefined
 check('非法链名 → 丢弃', parseSnapshot('{"chain":"玄学链","nodes":{}}') === undefined)
 // 解析：英文 kind 变体
@@ -142,6 +144,25 @@ check('废链收束不可再追加', !g4b.nodes.has('causal@1.2'))
 // supersede 容错：缺 reason 整个声明丢弃
 const noReason = parseSnapshot('{"chain":"因果链","supersede":{"root":1},"nodes":{"问题":"X"}}')
 check('supersede 缺 reason 丢弃', noReason?.supersede === undefined)
+
+// 补漏时 confidence 元数据刷新（修复置信度趋势预警路径不可达的设计缺口）
+// 第一轮：cause 节点入库，confidence=0.78
+const idx4c = createChainIndex()
+snapIngest(idx4c, 'sess-P3c', 'p3c1', '正文。', '{"chain":"因果链","nodes":{"问题":"项目延期","原因":"需求失控（置信度78%）"}}')
+const g4c = idx4c.graph('sess-P3c')!
+check('首轮 confidence 入库', g4c.nodes.get('causal@1.1')?.confidence === 0.78,
+  `actual=${g4c.nodes.get('causal@1.1')?.confidence}`)
+// 第二轮：补漏快照提供不同 confidence（0.45）+ 不同 value
+// 预期：confidence 被刷新为 0.45，value/核心内容不被覆盖
+snapIngest(idx4c, 'sess-P3c', 'p3c2', '新进展。', '{"chain":"因果链","nodes":{"原因":{"value":"完全不同的内容","confidence":45}}}')
+const g4c2 = idx4c.graph('sess-P3c')!
+check('补漏刷新 confidence 元数据', g4c2.nodes.get('causal@1.1')?.confidence === 0.45,
+  `actual=${g4c2.nodes.get('causal@1.1')?.confidence}`)
+check('补漏不覆盖核心内容', g4c2.nodes.get('causal@1.1')?.content === '需求失控（置信度78%）',
+  `actual=${g4c2.nodes.get('causal@1.1')?.content}`)
+// 第二轮不新增节点（补漏无新角色，toAdd.length===0）
+check('补漏无新增节点', g4c2.nodes.size === 2,  // causal@1 (root) + causal@1.1
+  `actual size=${g4c2.nodes.size}, ids=[${[...g4c2.nodes.keys()].join(',')}]`)
 
 console.log('== 5. P4 脉络导览元数据层 ==')
 // 导览：GPS 单行（进度/置信度/缺口）
