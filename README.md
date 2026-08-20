@@ -46,14 +46,22 @@ session/event → hook.ts 解析快照 + 更新 ChainGraph + 剥离 JSON 行
 
 ## 安装与装配
 
-### 方式 A：DSH 社区标准安装（推荐）
+### 方式 A：DSH Web Profile 安装（推荐，已验证）
 
 ```bash
-# 一键安装并自动应用 patch
-dsh plugin add @kiwifruit/dsh-context-pro
+# 1. 安装 dsh CLI 到项目（提供 node_modules/.bin/dsh）
+pnpm add @deepseek-ai/dsh
+
+# 2. 添加插件到 web profile（写入 ~/.dsh/profiles/web/package.json）
+pnpm exec dsh plugin --profile web add @kiwifruit/dsh-context-pro
+
+# 3. 验证已生效
+pnpm exec dsh plugin --profile web list
 ```
 
-### 方式 B：npm 包手动装配
+> ⚠️ `dsh` 不在全局 PATH 时必须用 `pnpm exec`；`--profile web` 会把依赖写入用户级 profile（`~/.dsh/profiles/web`），不改动工作区 `cordis.yml`。
+
+### 方式 B：npm 包手动装配（工作区级）
 
 ```bash
 npm install @kiwifruit/dsh-context-pro
@@ -74,22 +82,17 @@ npm install @kiwifruit/dsh-context-pro
             enabled: true
 ```
 
-### 方式 C：源码路径（开发用）
+### 方式 C：全局 CLI 安装（最简两步）
 
-```yaml
-- insert:
-    - id: context-pro
-      name: 'file:///E:/Deepseek/DSH-Context-Pro/src/index.ts'
-      config:
-        chains:
-          enabled: true
-          injectProtocol: true
-          maxNodesPerChain: 20
-          insight:
-            enabled: true
+```bash
+# 1. 全局安装 dsh CLI（需确保 pnpm global bin 在 PATH，或先运行 pnpm setup）
+npm install -g @deepseek-ai/dsh
+
+# 2. 直接添加插件到 web profile
+dsh plugin --profile web add @kiwifruit/dsh-context-pro
 ```
 
-> **Windows 路径须用三斜杠**：`file:///E:/...`（裸路径报 `ERR_UNSUPPORTED_ESM_URL_SCHEME`）
+> ⚠️ 若提示 `dsh` 命令未找到，请运行 `pnpm setup` 刷新 PATH，或改用**方式 A**（项目级 `pnpm exec`）。
 
 ## 配置完整参考
 
