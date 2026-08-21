@@ -28,7 +28,7 @@ export const inject = ['agents']
 
 const DEV_MODE = process.env.NODE_ENV !== 'production'
 
-export function apply(ctx: Context, config: ConfigSchema = {}): void {
+export function apply(ctx: Context, config: ConfigSchema = { chains: { enabled: false } }): void {
   const logger = ctx.logger('context-pro')
   const chains = config.chains
   const chainsEnabled = chains?.enabled ?? false
