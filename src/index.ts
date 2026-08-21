@@ -322,8 +322,8 @@ function registerInsightHTTP(
     path: '/api/context-pro/topics/stream',
     handler(req, res) {
       const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
-      const sessionId = url.searchParams.get('sessionId') ?? ''
-      if (!sessionId || sessionId.length < 4 || !/^[a-zA-Z0-9_-]+$/.test(sessionId)) {
+      const connSessionId = url.searchParams.get('sessionId') ?? ''
+      if (!connSessionId || connSessionId.length < 4 || !/^[a-zA-Z0-9_-]+$/.test(connSessionId)) {
         res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify({ ok: false, error: '无效 sessionId' }))
         return
@@ -347,7 +347,7 @@ function registerInsightHTTP(
 
       // P2：事件总线订阅（替代轮询）——仅该 session 变更时推送
       const unsubscribe = engine.on('topics-changed', ({ sessionId, topics }) => {
-        if (sessionId === sessionId) { // 仅推送当前连接关注的 session
+        if (sessionId === connSessionId) { // 仅推送当前连接关注的 session
           send({ type: 'update', topics, lastSessionId: sessionId, evicted: false })
         }
       })

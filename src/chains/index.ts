@@ -9,7 +9,7 @@
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import type { ChainAnchor, ChainGraph, ChainIndex } from './types.ts'
 import { createChainGraph } from './graph.ts'
-import { mergeSnapshotIntoGraph, parseSnapshot, stripSnapshotLine } from './snapshot.ts'
+import { mergeSnapshotIntoGraph, parseSnapshot } from './snapshot.ts'
 import { buildGuide } from './guide.ts'
 
 /** 从消息提取文本块（text 块） */
@@ -34,8 +34,6 @@ export function createChainIndex(options: { maxNodesPerChain?: number } = {}): C
     // 单一提取通道：末尾 JSON 快照（锚点语法已下线，不再解析 [因果@1] 标签）
     const snapshot = parseSnapshot(raw)
     if (!snapshot) return []
-
-    const text = stripSnapshotLine(raw)
 
     let g = graphs.get(sessionId)
     if (!g) {

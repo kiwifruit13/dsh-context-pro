@@ -1008,23 +1008,48 @@ function findContradictions(
 ): ContradictingEvidence[] {
   const contradictions: ContradictingEvidence[] = []
 
-  // 类型 A：supserseded 节点
-  for (const ne of nodeEvidences) {
-    const node = insight.references?.flatMap((r) => r.nodeIds ?? [])
-      ?.length ? null : null  // placeholder, 实际逻辑见下
+  // 类型 A：superseded — 存在 supersede 关系边，说明被引用的节点已被新节点作废，
+  // 该洞察的部分支撑失效，构成反向证据。
+  const supersedeEdges = edgeEvidences.filter((e) => e.kind === 'supersede')
+  for (const e of supersedeEdges) {
+    contradictions.push({
+      kind: 'superseded',
+      refId: e.toNodeId,
+      strength: e.strength * 0.9,
+      note: `节点 ${e.toNodeId} 已被节点 ${e.fromNodeId} 作废(supersede)，相关结论可能失效`,
+    })
   }
-  // 简化版：直接检查 node 状态
-  for (const ne of nodeEvidences) {
-    // node 在 graph 里可能已被 superseded（即使不在 nodeEvidences 里也需查）
-    // 但我们这里只能基于已有的 nodeEvidences 做判断——简化逻辑
-    if (ne.role === 'contradicting') continue
+  // 引用中直接标记了被 superseded 的节点（references.nodeIds 指向的作废节点）
+  for (const ref of insight.references ?? []) {
+    if (ref.role === 'superseded' && ref.nodeIds?.length) {
+      for (const nid of ref.nodeIds) {
+        contradictions.push({
+          kind: 'superseded',
+          refId: nid,
+          strength: 0.8,
+          note: `引用节点 ${nid} 已被标记 superseded`,
+        })
+      }
+    }
   }
 
-  // 类型 B：reverse-divergence — 节点证据里有 divergence 节点但没合流边
-  const hasDivergenceNode = nodeEvidences.some((ne) => {
-    // 需要从 graph 查，这里只能通过 reference 推断
-    return false
-  })
+  // 类型 B：reverse-divergence — 存在 diverged-from 边但缺少对应的 converged-into 边，
+  // 说明出现过双路径分叉却未合流，洞察依赖的脉络存在未收敛风险。
+  const divergedFrom = edgeEvidences.filter((e) => e.kind === 'diverged-from')
+  const convergedInto = edgeEvidences.filter((e) => e.kind === 'converged-into')
+  for (const e of divergedFrom) {
+    const hasConverged = convergedInto.some(
+      (c) => c.fromNodeId === e.fromNodeId || c.toNodeId === e.toNodeId,
+    )
+    if (!hasConverged) {
+      contradictions.push({
+        kind: 'reverse-divergence',
+        refId: e.fromNodeId,
+        strength: e.strength * 0.8,
+        note: `节点 ${e.fromNodeId} 分叉出双路径(${e.toNodeId})但未合流，脉络未收敛`,
+      })
+    }
+  }
 
   // 类型 C：confidence 缺失或为 0
   for (const ne of nodeEvidences) {

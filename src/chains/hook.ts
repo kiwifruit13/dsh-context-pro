@@ -121,7 +121,7 @@ export function registerChainHook(
   const index = createChainIndex(maxNodesPerChain !== undefined ? { maxNodesPerChain } : {})
 
   /** 记录上一轮图状态（用于 P1 变更检测：terminal-filled/emptied, divergence, structure） */
-  const prevGraphs = new Map<string, { guide: ChainGuide; snapshot?: ChainSnapshot }>()
+  const prevGraphs = new Map<string, { guide: ChainGuide; snapshot?: ChainSnapshot; nodesSize: number }>()
 
   if (enabled) {
     // ─── 监听器 ①：胶水转换 + ingestEvent（user + assistant 均触发） ───
@@ -207,7 +207,7 @@ export function registerChainHook(
               }
             }
             // structure-changed: 拓扑变化（简化：节点数变化 > 2）
-            if (Math.abs(g.nodes.size - (prev.guide.primary ? 1 : 0)) > 2) {
+            if (Math.abs(g.nodes.size - prev.nodesSize) > 2) {
               changeContext.changes.add('structure-changed')
             }
           }
@@ -215,7 +215,7 @@ export function registerChainHook(
           insightEngine.analyze(sessionId, g, guide, snapshot ?? null, changeContext)
 
           // 更新上一轮图状态
-          prevGraphs.set(sessionId, { guide, snapshot })
+          prevGraphs.set(sessionId, { guide, snapshot, nodesSize: g.nodes.size })
         }
       }
     })
