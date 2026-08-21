@@ -298,13 +298,14 @@ function analyzeMigration(graph: ChainGraph, guide: ChainGuide): InsightItem[] {
 // ---------------------------------------------------------------------------
 
 function analyzeConfidenceTrend(
+  snapshot: ChainSnapshot | null,
   filterSelector: FilterSelector,
   sessionId: string,
 ): InsightItem[] {
   const items: InsightItem[] = []
   const now = Date.now()
 
-  // 查询最近 20 个含快照的消息
+  // 查询最近 20 个含快照的消息（含当前轮次）
   const history = filterSelector.query(sessionId, { type: 'recent-snapshots', limit: 20 })
   if (history.length < 2) return items
 
@@ -323,26 +324,43 @@ function analyzeConfidenceTrend(
     }
   }
 
+  // 当前快照置信度（供单轮骤降检测用）
+  const currConfMap = new Map<string, number>()
+  if (snapshot) {
+    for (const [role, value] of Object.entries(snapshot.nodes) as [ChainRole, SnapshotNodeValue | undefined][]) {
+      if (value?.confidence === undefined) continue
+      currConfMap.set(`${snapshot.chain}:${role}`, value.confidence)
+    }
+  }
+
   for (const [key, seq] of confMap) {
     if (seq.length < 2) continue
 
-    // 计算连续下降次数
+    const latest = seq[seq.length - 1]
+    const chain = key.split(':')[0] as ChainKind
+    const role = key.split(':')[1] as ChainRole
+
+    // 连续下降检测
     let decreasing = 0
     for (let i = seq.length - 1; i > 0; i--) {
       if (seq[i] < seq[i - 1]) decreasing++
       else break
     }
 
-    const latest = seq[seq.length - 1]
-    const chain = key.split(':')[0] as ChainKind
-    const role = key.split(':')[1] as ChainRole
+    // 合并：连续下降 或 单轮骤降（≥0.3）
+    const singleDrop = currConfMap.has(key) ? (seq.length >= 2 ? seq[seq.length - 2] - latest : 0) : 0
+    const isSharpDrop = singleDrop >= 0.3
 
-    if (decreasing >= 3 || (decreasing >= 2 && latest < 0.4)) {
+    if (decreasing >= 3 || (decreasing >= 2 && latest < 0.4) || isSharpDrop) {
+      const severity: Severity = decreasing >= 3 || (decreasing >= 2 && latest < 0.4) ? 'critical' : 'warn'
+      const reason = isSharpDrop && decreasing < 2
+        ? `置信度从 ${Math.round(singleDrop * 100 + latest * 100)}% 降至 ${Math.round(latest * 100)}%（单轮降幅 ${Math.round(singleDrop * 100)}%）`
+        : `置信度连续 ${decreasing} 轮下降（最新 ${Math.round(latest * 100)}%）`
       items.push({
         type: 'confidence-trend',
-        severity: 'critical',
-        title: `${chain}的${ROLE_LABEL_CN[role]}置信度骤降`,
-        detail: `置信度连续 ${decreasing} 轮下降（最新 ${Math.round(latest * 100)}%），建议确认该结论是否仍成立。`,
+        severity,
+        title: `${chain}的${ROLE_LABEL_CN[role]}置信度${isSharpDrop ? '骤降' : '下降'}`,
+        detail: `${reason}。建议确认该结论是否仍成立。`,
         references: [{ scopeKey: `${chain}:${role}`, chain, role }],
         evidence: 1,
         timestamp: now,
@@ -436,12 +454,20 @@ function analyzeDivergence(graph: ChainGraph): InsightItem[] {
     if (converged) {
       const kindFromRoot = rootKey.split('@')[0] as ChainKind
       const rootFromKey = Number(rootKey.split('@')[1])
+      // 收敛场景也带 nodeIds，确保归因 Path A 始终可用（P1-3 防御加固）
+      const convNode = [...graph.nodes.values()].find(
+        (n) => rootKeyOf(n.id) === rootKey &&
+          n.role === role &&
+          n.status === 'active' &&
+          n.convergedFrom && n.convergedFrom.length > 0,
+      )
       items.push({
         type: 'divergence-watch',
         severity: 'info',
         title: `${rootKey}的${ROLE_LABEL_CN[role]}分歧已收敛`,
         detail: `AI 与用户在${ROLE_LABEL_CN[role]}上的分歧已通过合流解决。`,
-        references: [{ scopeKey: `${rootKey}:${role}`, chain: kindFromRoot, root: rootFromKey, role }],
+        references: [{ scopeKey: `${rootKey}:${role}`, chain: kindFromRoot, root: rootFromKey, role,
+          nodeIds: convNode ? [convNode.id] : [] }],
         evidence: 1,
         timestamp: now,
       })
@@ -505,7 +531,7 @@ function analyzeSnapshotTrend(
     }
   }
 
-  // ── ② Supersede 影响分析 ──
+  // ── ③ Supersede 影响分析 ──
   if (snapshot.supersede) {
     const reason = snapshot.supersede.reason
     items.push({
@@ -517,33 +543,6 @@ function analyzeSnapshotTrend(
       evidence: 1,
       timestamp: now,
     })
-  }
-
-  // ── ③ 置信度对比 ──
-  if (prevSnapshots.length > 0) {
-    const prev = prevSnapshots[prevSnapshots.length - 1].snapshot
-    if (prev) {
-      for (const [role, value] of Object.entries(snapshot.nodes) as [ChainRole, SnapshotNodeValue | undefined][]) {
-        if (value?.confidence === undefined) continue
-        // 查找上一轮同角色置信度
-        const prevValue = prev.nodes[role]
-        const prevConfidence = prevValue?.confidence
-        if (prevConfidence === undefined) continue
-
-        const drop = prevConfidence - value.confidence
-        if (drop >= 0.3) {
-          items.push({
-            type: 'confidence-trend',
-            severity: 'warn',
-            title: `${CHAIN_LABEL_CN[snapshot.chain] ?? snapshot.chain}的${ROLE_LABEL_CN[role]}置信度骤降`,
-            detail: `置信度从 ${Math.round(prevConfidence * 100)}% 降至 ${Math.round(value.confidence * 100)}%（降幅 ${Math.round(drop * 100)}%）。建议确认该结论是否仍成立。`,
-            references: [{ scopeKey: `${snapshot.chain}:${role}`, chain: snapshot.chain, role }],
-            evidence: 1,
-            timestamp: now,
-          })
-        }
-      }
-    }
   }
 
   return items
@@ -705,7 +704,7 @@ function generateTopics(
     topics.push({
       kind: 'extension',
       question: keyContents.length >= 2
-        ? `你之前认为"${keyContents[0]}"，而我看到的是"${keyContents[1]}"。与其二选一，不如想想这两种看法背后是不是藏着同一个更深层的原因？`
+        ? `你认为"${keyContents[1]}"，但我觉得"${keyContents[0]}"。与其二选一，不如想想这两种看法背后是不是藏着同一个更深层的原因？`
         : '刚才有两种不同的看法，与其二选一，不如想想它们背后是不是藏着同一个更深层的原因？',
       rationale: insight.confidenceProfile?.rationale ?? insight.detail,
       basedOn: buildBasedOn(insight, keyContents, keyEdges),
@@ -764,7 +763,8 @@ function generateTopics(
   const activeOtherChains = guide.chains.filter(
     (c) => !c.ended && !c.superseded && primary && c.kind !== primary.kind,
   )
-  for (const chain of endedChains.slice(-1)) {
+  if (endedChains.length > 0) {
+    const chain = endedChains[endedChains.length - 1]
     if (activeOtherChains.length > 0) {
       const endedContent = chainRoleContent(graph, chain.kind,
         ROLE_BY_KIND_START[chain.kind] ?? chain.roles[0].role)
@@ -849,6 +849,36 @@ const NODE_WEIGHT: Record<'primary' | 'supporting' | 'contradicting', number> = 
 }
 
 /**
+ * 从 scopeKey 解析结构化字段（P1-5 容错）。
+ * 支持的格式：
+ *   - `${chain}:${role}`         → { chain, role }
+ *   - `${chain}@${root}:${role}` → { chain, root, role }
+ * 不支持（返回空对象）：
+ *   - `${chain}->...`           → 迁移类 scopeKey，无 role
+ *   - 其他未知格式
+ */
+function parseScopeKey(key: string): {
+  chain?: ChainKind; root?: number; role?: ChainRole
+} {
+  // 匹配 `causal@1:cause` 或 `causal:cause`
+  const match = key.match(/^(causal|logic|operation|narrative|temporal)(?:@(\d+))?:(.+)$/)
+  if (!match) return {}
+  const [, kindStr, rootStr, roleStr] = match
+  const chain = kindStr as ChainKind
+  const root = rootStr ? Number(rootStr) : undefined
+  // 校验 role 是否在合法集合内
+  const allRoles: ChainRole[] = [
+    'problem', 'cause', 'solution',
+    'premise', 'reasoning', 'conclusion',
+    'action', 'step', 'result',
+    'beginning', 'development', 'twist', 'ending',
+    'past', 'present', 'future',
+  ]
+  if (!allRoles.includes(roleStr as ChainRole)) return {}
+  return { chain, root, role: roleStr as ChainRole }
+}
+
+/**
  * 步骤 ①：提取节点证据
  *
  * 来源：
@@ -884,7 +914,17 @@ function extractNodeEvidence(
 
   // 路径 B：通过 scopeKey 模糊匹配（按 chain:role 找最新活跃节点）
   for (const ref of insight.references ?? []) {
-    if (!ref.scopeKey || !ref.chain || !ref.role) continue
+    // 优先使用结构化字段，缺失时尝试从 scopeKey 解析（P1-5 容错）
+    let chain = ref.chain
+    let role = ref.role
+    if (!chain || !role && ref.scopeKey) {
+      const parsed = parseScopeKey(ref.scopeKey)
+      if (parsed.chain && parsed.role) {
+        chain = parsed.chain
+        role = parsed.role
+      }
+    }
+    if (!ref.scopeKey || !chain || !role) continue
     const matchingNodes: ChainNode[] = []
     for (const node of graph.nodes.values()) {
       if (node.kind !== ref.chain) continue
@@ -1019,10 +1059,13 @@ function findContradictions(
       note: `节点 ${e.toNodeId} 已被节点 ${e.fromNodeId} 作废(supersede)，相关结论可能失效`,
     })
   }
-  // 引用中直接标记了被 superseded 的节点（references.nodeIds 指向的作废节点）
+  // 引用中包含的节点若被 supersede 边指向，说明该节点已被作废
+  const supersededNodeIds = new Set(
+    edgeEvidences.filter((e) => e.kind === 'supersede').map((e) => e.toNodeId)
+  )
   for (const ref of insight.references ?? []) {
-    if (ref.role === 'superseded' && ref.nodeIds?.length) {
-      for (const nid of ref.nodeIds) {
+    for (const nid of ref.nodeIds ?? []) {
+      if (supersededNodeIds.has(nid)) {
         contradictions.push({
           kind: 'superseded',
           refId: nid,
@@ -1182,54 +1225,25 @@ export function attributeInsightsPure(
 /** 会话总数上限（8.7 内存保护超限时淘汰最旧不活跃会话，默认值） */
 const DEFAULT_MAX_SESSIONS = 100
 
-/** 会话访问记录（LRU 淘汰用） */
-class SessionAccessTracker {
-  private readonly order: string[] = []
-
-  access(sessionId: string): void {
-    const idx = this.order.indexOf(sessionId)
-    if (idx >= 0) this.order.splice(idx, 1)
-    this.order.push(sessionId)
-  }
-
-  /** 返回最旧不活跃会话（超过上限时淘汰），或 undefined */
-  evictIfOverLimit(limit: number): string | undefined {
-    while (this.order.length > limit) {
-      return this.order.shift()
-    }
-    return undefined
-  }
-
-  remove(sessionId: string): void {
-    const idx = this.order.indexOf(sessionId)
-    if (idx >= 0) this.order.splice(idx, 1)
-  }
-
-  get size(): number {
-    return this.order.length
-  }
-}
-
 /**
  * 创建过滤/选择器（洞察模块入口组件，规则由洞察需求驱动）。
  *
  * 内存级累积 SessionEventInput → InsightHistoryItem，按 InsightNeed 查询。
  * 窗口大小 HISTORY_WINDOW（最近 20 轮 = 40 条消息），FIFO 淘汰最旧项。
- * 会话数上限 MAX_SESSIONS（8.7），超限时淘汰最旧不活跃会话。
+ * 会话数上限由 InsightEngine 统一淘汰，本组件不再自行淘汰（P1-1 架构加固）。
  * 重载归零（超然层无状态观察，符合设计）。
  *
  * 独立工厂函数，可单独 mock 测试 FilterSelector 而不依赖 InsightEngine。
- * P0 可配置化：接受 historyWindow 和 maxSessions 参数。
+ * P0 可配置化：接受 historyWindow 参数。
  */
 export function createFilterSelector(
   historyWindow = DEFAULT_HISTORY_WINDOW,
-  maxSessions = DEFAULT_MAX_SESSIONS,
+  _maxSessions?: number, // 已由 InsightEngine 统一淘汰，本参数保留为兼容
 ): FilterSelector {
   /** sessionId → 累积的历史项 */
   const histories = new Map<string, InsightHistoryItem[]>()
   /** sessionId → 已累积的 assistant 消息数（用于 round 计数） */
   const rounds = new Map<string, number>()
-  const access = new SessionAccessTracker()
 
   function getHistory(sessionId: string): InsightHistoryItem[] {
     let h = histories.get(sessionId)
@@ -1246,14 +1260,6 @@ export function createFilterSelector(
 
   return {
     ingest(sessionId, event) {
-      access.access(sessionId)
-
-      // 会话数超限时淘汰最旧不活跃会话（8.7 内存保护）
-      const evicted = access.evictIfOverLimit(maxSessions)
-      if (evicted !== undefined) {
-        histories.delete(evicted)
-        rounds.delete(evicted)
-      }
       const history = getHistory(sessionId)
       // assistant 消息递增 round；user 消息沿用当前 round（与最近一条 assistant 同轮）
       let round = getRound(sessionId)
@@ -1301,7 +1307,6 @@ export function createFilterSelector(
     dispose(sessionId) {
       histories.delete(sessionId)
       rounds.delete(sessionId)
-      access.remove(sessionId)
     },
   }
 }
@@ -1332,8 +1337,6 @@ export function createInsightEngine(
   const clientActive = new Map<string, boolean>()
   /** 过滤/选择器：洞察模块入口组件，累积 session 事件供分析器按需查询 */
   const filterSelector = createFilterSelector(HISTORY_WINDOW, MAX_SESSIONS)
-  /** 会话访问跟踪（8.7 内存保护） */
-  const access = new SessionAccessTracker()
 
   /** 简易事件总线（P2：SSE 实时推送用，替代轮询） */
   type EventMap = {
@@ -1347,7 +1350,15 @@ export function createInsightEngine(
     return () => { set.delete(handler) }
   }
   function emit<K extends keyof EventMap>(event: K, payload: EventMap[K]): void {
-    listeners.get(event)?.forEach((h) => h(payload))
+    const handlers = listeners.get(event)
+    if (!handlers) return
+    for (const h of [...handlers]) {
+      try { h(payload) }
+      catch (err) {
+        handlers.delete(h)
+        log.info(`[insight] topics-changed handler 崩溃（已自动移除）: ${String(err).slice(0, 80)}`)
+      }
+    }
   }
 
   function getStore(sessionId: string): InsightStore {
@@ -1377,10 +1388,11 @@ export function createInsightEngine(
     )
     while (store.insights.length > MAX_INSIGHTS) {
       let victimIdx = 0
-      let victimScore = Infinity
+      let victimScore = -Infinity
       for (let i = 0; i < store.insights.length; i++) {
-        const score = store.insights[i].evidence * 10 + severityRank(store.insights[i].severity)
-        if (score < victimScore) {
+        // 高 severity + 高 evidence → 低 score → 保留；高 score → 淘汰
+        const score = (3 - severityRank(store.insights[i].severity)) * 10 - store.insights[i].evidence
+        if (score > victimScore) {
           victimScore = score
           victimIdx = i
         }
@@ -1451,18 +1463,27 @@ export function createInsightEngine(
     analyze(sessionId, graph, guide, _snapshot, changeContext) {
       // 当前轮次快照已通过 ingestEvent 进入 FilterSelector。
       // _snapshot 参数用于"当前快照+历史趋势"实时分析（分析器 ⑥）。
-      access.access(sessionId)
+      const normSessionId = normalizeSessionId(sessionId)
 
-      // 会话数超限时淘汰最旧不活跃会话（8.7 内存保护）
-      const evicted = access.evictIfOverLimit(MAX_SESSIONS)
-      if (evicted !== undefined) {
-        const normEvicted = normalizeSessionId(evicted)
-        stores.delete(normEvicted)
-        clientActive.delete(normEvicted)
-        filterSelector.dispose(normEvicted)
+      // 会话数超限时淘汰最旧不活跃会话（8.7 内存保护，基于 stores 自身 round 而非独立 LRU）
+      while (stores.size > MAX_SESSIONS) {
+        let victimId: string | undefined
+        let minRound = Infinity
+        for (const [sid, store] of stores) {
+          if (store.round < minRound) {
+            minRound = store.round
+            victimId = sid
+          }
+        }
+        if (victimId !== undefined) {
+          stores.delete(victimId)
+          clientActive.delete(victimId)
+          filterSelector.dispose(victimId)
+        } else {
+          break
+        }
       }
 
-      const normSessionId = normalizeSessionId(sessionId)
       const store = getStore(normSessionId)
       lastSessionId = normSessionId
       store.round += 1
@@ -1484,7 +1505,7 @@ export function createInsightEngine(
       const allInsights: InsightItem[] = [
         ...(shouldRun(['chain-added', 'chain-removed', 'chain-type-changed', 'structure-changed']) ? analyzeCrossReaction(graph) : []),
         ...(shouldRun(['chain-added', 'chain-removed', 'chain-type-changed', 'structure-changed']) ? analyzeMigration(graph, guide) : []),
-        ...(shouldRun(['confidence-shift', 'supersede-detected']) ? analyzeConfidenceTrend(filterSelector, sessionId) : []),
+        ...(shouldRun(['confidence-shift', 'supersede-detected']) ? analyzeConfidenceTrend(_snapshot ?? null, filterSelector, sessionId) : []),
         ...(shouldRun(['terminal-filled', 'terminal-emptied', 'structure-changed']) ? analyzeGapAggregation(guide) : []),
         ...(shouldRun(['divergence-detected', 'structure-changed']) ? analyzeDivergence(graph) : []),
         ...(_snapshot && shouldRun(['supersede-detected', 'confidence-shift', 'chain-type-changed']) ? analyzeSnapshotTrend(_snapshot, filterSelector, sessionId) : []),
@@ -1530,7 +1551,7 @@ export function createInsightEngine(
      *
      * 本方法返回已附加 confidenceProfile 的洞察列表（懒查询）。
      */
-    attributeInsights(sessionId) {
+    getAttributedInsights(sessionId) {
       const store = stores.get(normalizeSessionId(sessionId))
       if (!store) return []
       return store.insights.map((i) => ({ ...i }))
@@ -1578,7 +1599,6 @@ export function createInsightEngine(
 
     ingestEvent(sessionId, event) {
       const normId = normalizeSessionId(sessionId)
-      access.access(normId)
       filterSelector.ingest(normId, event)
     },
 
@@ -1592,7 +1612,6 @@ export function createInsightEngine(
       stores.delete(normId)
       filterSelector.dispose(normId)
       clientActive.delete(normId)
-      access.remove(normId)
       const duration = Date.now() - startTime
       if (duration > 10 || hadStore) {
         log.info(`[诊断] insightEngine.dispose ${hadStore ? '清理' : '无存储'} ${duration}ms (session: ${normId}, insights: ${insightsCount}, topics: ${topicsCount}, clientActive: ${hadTopics})`)

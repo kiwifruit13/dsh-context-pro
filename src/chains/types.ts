@@ -357,7 +357,7 @@ export interface InsightItem {
    *   - 但评估洞察的方法论稳定：节点证据 + 边证据 + 反证 + 综合评分
    *   - 此字段承载评估过程的结构化产物，是"有规可依"的载体
    *
-   * 生成时机：由 attributeInsights() 在 ChainGraph 上推理生成，按需懒附加。
+   * 生成时机：由 getAttributedInsights() 在 ChainGraph 上推理生成，按需懒附加。
    * 生命周期：随 InsightItem 流转，不单独存储。
    */
   confidenceProfile?: ConfidenceProfile
@@ -419,7 +419,7 @@ export interface ContradictingEvidence {
  *   - 洞察内容千变万化 → 此档案不约束洞察内容
  *   - 评估方法稳定可复用 → 此档案的结构（节点+边+反证+评分）是稳定的
  *
- * 由 attributeInsights() 在 ChainGraph 上推理生成。
+ * 由 getAttributedInsights() 在 ChainGraph 上推理生成。
  */
 export interface ConfidenceProfile {
   /** 节点级证据（第一步：收集支撑该洞察的 ChainNode） */
@@ -502,7 +502,7 @@ export interface InsightEngine {
    *
    * 设计意图：洞察本身千变万化，但评估洞察的方法（节点证据 + 边证据 + 反证 + 综合评分）稳定可复用。
    */
-  attributeInsights(sessionId: string): InsightItem[]
+  getAttributedInsights(sessionId: string): InsightItem[]
   /** 获取当前会话的推荐话题（供 UI / 会话结束便条渲染） */
   getTopics(sessionId: string): RecommendationTopic[]
   /** 获取最近活跃会话的推荐话题（供 Client RPC 调取） */

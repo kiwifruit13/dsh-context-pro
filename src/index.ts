@@ -17,7 +17,7 @@ import { createInsightEngine } from './chains/insight.ts'
 import type { InsightEngine, InsightType, InsightConfig, RecommendationTopic } from './chains/types.ts'
 import { registerOpenAPIEndpoint } from './openapi.ts'
 import { createAuthMiddleware, withAuth } from './auth.ts'
-import { sessionIdFromExec } from './session-id.ts'
+import { sessionIdFromExec, normalizeSessionId } from './session-id.ts'
 import { getAllMetrics, recordInsightToolCall } from './metrics.ts'
 // 伴生不变式插件（自动注册到 dsh-invariants）
 import './invariant.ts'
@@ -322,8 +322,8 @@ function registerInsightHTTP(
     path: '/api/context-pro/topics/stream',
     handler(req, res) {
       const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
-      const connSessionId = url.searchParams.get('sessionId') ?? ''
-      if (!connSessionId || connSessionId.length < 4 || !/^[a-zA-Z0-9_-]+$/.test(connSessionId)) {
+      const connSessionId = normalizeSessionId(url.searchParams.get('sessionId') ?? '')
+      if (!connSessionId || connSessionId.length < 4 || !/^[a-z0-9_-]+$/.test(connSessionId)) {
         res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify({ ok: false, error: '无效 sessionId' }))
         return
@@ -342,8 +342,8 @@ function registerInsightHTTP(
         res.write(`data: ${JSON.stringify(data)}\n\n`)
       }
 
-      // 首次发送当前快照
-      send({ type: 'snapshot', ...engine.getLatestTopics() })
+      // 首次发送当前快照——返回连接会话的快照，而非 lastSessionId
+      send({ type: 'snapshot', topics: engine.getTopics(connSessionId), lastSessionId: connSessionId, evicted: !engine.hasStore(connSessionId) })
 
       // P2：事件总线订阅（替代轮询）——仅该 session 变更时推送
       const unsubscribe = engine.on('topics-changed', ({ sessionId, topics }) => {

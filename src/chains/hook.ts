@@ -139,23 +139,24 @@ export function registerChainHook(
     ctx.on('session/event', (_session, event) => {
       if (event.type !== 'assistant/message') return
 
-      const sessionId = sessionIdFromEvent(_session)
-      checkSessionIdConsistency(sessionId, 'chainExtract', ctx)
-      const msg = event.data as { message?: { id?: string; content?: unknown[] } }
-      const content = msg.message?.content ?? []
-      const text = extractText(content)
-      if (!text) return
+      try {
+        const sessionId = sessionIdFromEvent(_session)
+        checkSessionIdConsistency(sessionId, 'chainExtract', ctx)
+        const msg = event.data as { message?: { id?: string; content?: unknown[] } }
+        const content = msg.message?.content ?? []
+        const text = extractText(content)
+        if (!text) return
 
-      const messageLike = {
-        id: String(msg.message?.id ?? `evt-${Date.now()}`),
-        role: 'user' as const,
-        content: content as never,
-        source: { kind: 'plugin' as const, plugin: 'dsh-context-pro' },
-      }
-      const anchors = index.ingest(sessionId, messageLike as never)
-      if (anchors.length > 0) {
-        ctx.logger('context-pro').info(`链提取: ${anchors.length} 锚点 @ session ${sessionId}`)
-      }
+        const messageLike = {
+          id: String(msg.message?.id ?? `evt-${Date.now()}`),
+          role: 'user' as const,
+          content: content as never,
+          source: { kind: 'plugin' as const, plugin: 'dsh-context-pro' },
+        }
+        const anchors = index.ingest(sessionId, messageLike as never)
+        if (anchors.length > 0) {
+          ctx.logger('context-pro').info(`链提取: ${anchors.length} 锚点 @ session ${sessionId}`)
+        }
 
       // 链图健康度指标（9.2）
       const g = index.graph(sessionId)
@@ -218,7 +219,14 @@ export function registerChainHook(
           prevGraphs.set(sessionId, { guide, snapshot, nodesSize: g.nodes.size })
         }
       }
-    })
+    } catch (err) {
+      // P1-4 通道耦合补偿：链提取或分析异常时不影响监听器 ①（ingestEvent）和历史累积
+      // 记录诊断信息，降级为仅历史更新、跳过本轮洞察分析
+      ctx.logger('context-pro').warn(
+        `[诊断] 链提取/分析异常（已降级）: ${String(err).slice(0, 120)}`
+      )
+    }
+  })
 
     // ─── 监听器 ③：话题便条注入（仅 assistant，通过 agent.inject 发独立消息） ───
     // 不修改已提交的 session/event 数据（8.2），改用 agent.inject 注入独立用户消息

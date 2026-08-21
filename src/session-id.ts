@@ -99,6 +99,14 @@ export function sessionIdFromExec(exec: {
  * @param id - 字符串形式的 session ID
  * @returns SessionId 类型
  */
+/**
+ * Session ID 归一化：去除空白、统一小写、长度限制。
+ * 确保存储/获取/比较使用同一格式，避免大小写不一致导致匹配失败。
+ */
+export function normalizeSessionId(id: string): string {
+  return id.trim().toLowerCase().slice(0, 128)
+}
+
 export function toSessionId(id: string): SessionId {
   return id as SessionId
 }
