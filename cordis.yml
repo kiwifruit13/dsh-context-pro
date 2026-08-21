@@ -10,3 +10,6 @@
           maxNodesPerChain: 20
           insight:
             enabled: true
+            selectiveAnalysis: true
+            auth:
+              devAutoKey: true

@@ -196,6 +196,7 @@ dsh plugin --profile web add @kiwifruit/dsh-context-pro
 | `docs/CLAUDE.md` | API/接口/胶水公约（技能 `api-contract-guide`） |
 | `docs/洞察引擎.md` | 洞察引擎架构与分析器详解（v0.2.0 历史版本） |
 | `docs/insight-engine-design.md` | **洞察引擎 v0.3+ 完整设计文档**（归因档案 + 话题生成） |
+| `docs/insight-architecture.md` | **洞察引擎架构终局**（超然层/协作图/归因四步法/话题范式/生命周期/三条通道） |
 
 ## 目录结构
 

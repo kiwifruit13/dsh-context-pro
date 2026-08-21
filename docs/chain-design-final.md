@@ -232,6 +232,8 @@ agent/pre-step (waterfall)
 | `candidate.ts` | 链节点 → SELECT 候选（仅非链模式；链协议模式下废弃） |
 | `prestep.ts` | waterfall 拦截器（链协议模式：零干预；非链模式：SELECT→REFACTOR→INJECT→MEASURE） |
 
+> **洞察引擎相关组件**（`insight.ts`、`types.ts` 归因契约、`auth.ts`、`openapi.ts`、`metrics.ts`、`client.js`、HTTP 路由）已迁移至独立架构文档：[`insight-architecture.md`](./insight-architecture.md)。
+
 ### 6.3 生命周期
 
 ```
@@ -293,7 +295,11 @@ config:
 | verify-chains.ts | 生命周期 / P0 回归 / 快照通道 / 数据模型 / 脉络导览 | 67 |
 | verify-protocol.ts | 图鉴内容完整性 / 终局共识要素 | 19 |
 | verify-e2e.ts | 装配 → SELECT → REFACTOR → INJECT → MEASURE → pre-step 分发 | 1 |
-| test-pipeline.ts | SELECT / INJECT / MEASURE 边界测试 | 16 |
+| verify-attribution.ts | 归因算法契约（节点证据/边证据/反证/评分/rationale） | 23 |
+| verify-topics.ts | 话题生成范式（6 类话题 / basedOn 档案 / 引用真实内容） | 13 |
+| verify-bugfixes.ts | 回归修复防线 | 动态 |
+
+> **洞察引擎专项验证**（`verify-attribution.ts`、`verify-topics.ts`）详见 [`insight-architecture.md#八、验证矩阵`](./insight-architecture.md#八、验证矩阵)。
 
 ---
 
@@ -309,3 +315,17 @@ config:
 | 2026-08-17 | 末尾 JSON 快照为主提取通道，锚点语法下线并删除 | 正文自然表达，用户感受不到框架；解析器已删除，不再保留 dead code |
 | 2026-08-17 | 快照用户不可见，hook 自动剥离 | 提取在后台默默完成，不干扰用户阅读体验 |
 | 2026-08-17 | **链协议模式 prestep 零干预** | CoT 放权——System Prompt 中的图鉴是唯一注入源，SELECT 管道不运行；架构图 6.1 拆分为双模式流程 |
+| 2026-08-19 | 引入洞察引擎（v0.3.0） | 超然层只观察只建议，不干预 CoT；HTTP API + Client UI 落地 |
+| 2026-08-20 | 归因档案 + 话题基于洞察生成（v0.3.5） | 洞察从"现象报告"升级为"归因诊断"；话题不再套模板，引用真实节点内容 |
+| 2026-08-20 | 选择性分析器 + SSE 事件总线 | 按 ChangeContext 按需触发分析器；topics-changed 事件替代轮询 |
+| 2026-08-21 | LRU 会话淘汰 + getLatestTopics evicted 语义 | 内存保护 maxSessions=100；消除空话题歧义 |
+| 2026-08-21 | 项目结构重构（v0.4.0） | 清理文档与测试目录，核心模块零变更，架构文档拆分（chain-design-final 回归本源 + insight-architecture 承载洞察架构） |
+
+---
+
+## 十一、延伸阅读
+
+| 文档 | 读它能获得什么 |
+|------|--------------|
+| [`insight-architecture.md`](./insight-architecture.md) | 洞察引擎架构视角：超然层原则、六分析器协作、归因四步法、话题生成范式、生命周期、三条对外通道 |
+| [`insight-engine-design.md`](./insight-engine-design.md) | 洞察引擎实现规格：归因算法细节、话题模板、配置全表、测试用例、v0.2.0→v0.3+ 演进记录 |

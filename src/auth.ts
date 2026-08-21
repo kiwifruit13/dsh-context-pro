@@ -60,11 +60,14 @@ export function createAuthMiddleware(
   const isDev = process.env.NODE_ENV !== 'production'
 
   // 开发模式自动保护：从环境变量读取或生成临时 key
+  // 生产模式下 devAutoKey 被强制忽略——即使显式设置也拒绝自动放行，
+  // 避免配置失误暴露到外部网络时无鉴权保护。
+  const devAutoKeyEnabled = devAutoKey && isDev
   let effectiveKeys = [...keys]
   let effectiveKeyHashes = [...keyHashes]
   let devKeyGenerated = false
 
-  if (isDev && devAutoKey && effectiveKeys.length === 0 && effectiveKeyHashes.length === 0) {
+  if (devAutoKeyEnabled && effectiveKeys.length === 0 && effectiveKeyHashes.length === 0) {
     const envKey = process.env.CONTEXT_PRO_DEV_KEY
     if (envKey) {
       effectiveKeys = [envKey]

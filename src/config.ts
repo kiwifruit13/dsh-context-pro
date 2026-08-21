@@ -10,8 +10,8 @@
 import z from '@deepseek-ai/schemastery'
 
 export interface Config {
-  /** 链感知配置（5 链图鉴方案，默认关闭） */
-  chains?: {
+  /** 链感知配置（5 链图鉴方案） */
+  chains: {
     /** 链感知开关 */
     enabled: boolean
     /** 每链节点上限（默认 20） */
@@ -88,7 +88,7 @@ export const Config: z<Config> = z.object({
   chains: z
     .object({
       enabled: z.boolean().default(false),
-      maxNodesPerChain: z.number().default(20),
+      maxNodesPerChain: z.number().min(1).default(20),
       injectProtocol: z.boolean().default(false),
       insight: z
         .object({
