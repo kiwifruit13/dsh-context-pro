@@ -1,0 +1,21 @@
+.chip-group {
+  display: flex;           /* 横向排列 */
+  gap: 8px;                /* 间距 */
+  flex-wrap: wrap;         /* 超宽自动换行 */
+}
+
+.chip {
+  border: 1px solid #d0d7de;
+  border-radius: 999px;    /* 圆角拉满 = 胶囊 */
+  padding: 6px 14px;
+  font-size: 14px;
+  background: #fff;
+  color: #333;
+  cursor: pointer;
+  transition: background .2s, border-color .2s;
+}
+
+.chip:hover {
+  background: #f0f6ff;
+  border-color: #4f8ff7;
+}

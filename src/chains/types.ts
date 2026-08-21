@@ -349,6 +349,89 @@ export interface InsightItem {
   /** 内部字段：上次被确认的轮次（用于过期淘汰，分析器无需设置） */
   lastSeenRound?: number
   timestamp: number
+  /**
+   * 可信度归因档案（P0 新增）：让洞察从"结果评价"升级为"归因诊断"。
+   *
+   * 设计意图：
+   *   - 洞察本身千变万化，不预设内容模板
+   *   - 但评估洞察的方法论稳定：节点证据 + 边证据 + 反证 + 综合评分
+   *   - 此字段承载评估过程的结构化产物，是"有规可依"的载体
+   *
+   * 生成时机：由 attributeInsights() 在 ChainGraph 上推理生成，按需懒附加。
+   * 生命周期：随 InsightItem 流转，不单独存储。
+   */
+  confidenceProfile?: ConfidenceProfile
+}
+
+/** 证据角色（节点证据的语义分类） */
+export type EvidenceRole = 'primary' | 'supporting' | 'contradicting'
+
+/** 归因边类型（ChainGraph 内置关系的归一化） */
+export type AttributionEdgeKind =
+  | 'parent-child'        // 父子演化（ChainNode.parent/children）
+  | 'revision'            // 修正（ChainNode.revisionOf）
+  | 'supersede'           // 作废（supersedeRoot 产生）
+  | 'diverged-from'       // 分叉（divergence='ai'/'user' 共享根）
+  | 'converged-into'      // 合流（convergedFrom 非空）
+  | 'cross-chain-link'    // 跨链引用（ChainNode.links）
+
+/** 节点级证据：归因方法论第一步 */
+export interface NodeEvidence {
+  /** 关联的 ChainNode.id */
+  nodeId: string
+  /** 该节点在归因中的角色 */
+  role: EvidenceRole
+  /** 权重 0-1（primary > supporting > contradicting） */
+  weight: number
+  /** 节点置信度（如有） */
+  confidence?: number
+}
+
+/** 边级证据：归因方法论第二步 */
+export interface EdgeEvidence {
+  /** 边类型 */
+  kind: AttributionEdgeKind
+  /** 起点节点 id */
+  fromNodeId: string
+  /** 终点节点 id */
+  toNodeId: string
+  /** 强度 0-1（结构化边通常为 1.0，可被反证削弱） */
+  strength: number
+}
+
+/** 反证：归因方法论第三步（识别反向证据） */
+export interface ContradictingEvidence {
+  /** 反证类型 */
+  kind: 'superseded' | 'reverse-divergence' | 'confidence-decay' | 'no-support'
+  /** 反证指向的节点/边 id */
+  refId: string
+  /** 反证强度 0-1 */
+  strength: number
+  /** 人类可读说明 */
+  note?: string
+}
+
+/**
+ * 可信度归因档案：洞察的"证据报告"。
+ *
+ * 核心定位：
+ *   - 让洞察从"我看到了 X"升级为"我为什么这样判断，证据是什么，可信度多少"
+ *   - 洞察内容千变万化 → 此档案不约束洞察内容
+ *   - 评估方法稳定可复用 → 此档案的结构（节点+边+反证+评分）是稳定的
+ *
+ * 由 attributeInsights() 在 ChainGraph 上推理生成。
+ */
+export interface ConfidenceProfile {
+  /** 节点级证据（第一步：收集支撑该洞察的 ChainNode） */
+  nodeEvidence: NodeEvidence[]
+  /** 边级证据（第二步：收集支撑该洞察的结构化关系） */
+  edgeEvidence: EdgeEvidence[]
+  /** 反证（第三步：识别反向证据；可为空） */
+  contradictingEvidence: ContradictingEvidence[]
+  /** 综合评分（第四步：归因可信度 0-1） */
+  attributionScore: number
+  /** 归因路径（人类可读） */
+  rationale: string
 }
 
 /** 话题形态：延展型（往哪深挖）/ 收束型（该进入下一阶段了） */
@@ -363,6 +446,27 @@ export interface RecommendationTopic {
   rationale: string
   relatedChain?: ChainKind
   timestamp: number
+  /**
+   * 话题的归因档案（P4-2 新增）。
+   *
+   * 设计意图：
+   *   - 话题必须依据洞察产生（用户感受"AI 真的越来越懂我"）
+   *   - 但洞察本身千变万化，话题的话术不应该按"洞察 type 套模板"
+   *   - 此档案承载"这个话题为什么基于这条洞察"的归因证据
+   *   - 让话题的 rationale 从"洞察 detail 的转述"升级为"归因档案的可读投影"
+   *
+   * 来源：generateTopics 在产出话题时，把对应洞察的 confidenceProfile 引用过来。
+   */
+  basedOn?: {
+    /** 该话题依据的洞察标题（来自 store.insights.title） */
+    insightTitle: string
+    /** 该洞察的归因评分（0-1） */
+    attributionScore: number
+    /** 关键节点内容（用于让话题话术引用真实 ChainNode 内容） */
+    keyNodeContents: string[]
+    /** 关键边关系（用于让话题话术引用结构化关系） */
+    keyEdgeKinds: AttributionEdgeKind[]
+  }
 }
 
 /** 会话内洞察存储（生命周期跟会话，session/disposed 一并销毁） */
@@ -387,6 +491,18 @@ export interface InsightEngine {
   ): void
   /** 获取当前会话的洞察项（供 get_insights tool 调取） */
   getInsights(sessionId: string, type?: InsightType): InsightItem[]
+  /**
+   * 归因分析：对当前会话已有洞察做可信度评估（P0 新增）。
+   *
+   * 行为契约：
+   *   - 输入：会话 ChainGraph（从 stores 取出）+ InsightStore.insights
+   *   - 输出：每条 InsightItem 附带 confidenceProfile（不修改原对象）
+   *   - 纯函数语义：不修改 ChainGraph、不修改 InsightStore
+   *   - 零新增存储：归因档案随返回值流转，不持久化
+   *
+   * 设计意图：洞察本身千变万化，但评估洞察的方法（节点证据 + 边证据 + 反证 + 综合评分）稳定可复用。
+   */
+  attributeInsights(sessionId: string): InsightItem[]
   /** 获取当前会话的推荐话题（供 UI / 会话结束便条渲染） */
   getTopics(sessionId: string): RecommendationTopic[]
   /** 获取最近活跃会话的推荐话题（供 Client RPC 调取） */

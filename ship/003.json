@@ -1,0 +1,13 @@
+const group = document.getElementById('suggestions');
+
+group.addEventListener('click', (e) => {
+  const chip = e.target.closest('.chip');
+  if (!chip) return;
+
+  const text = chip.textContent;
+  // 关键：复用发送消息的通道，而不是单独写逻辑
+  sendMessage(text);   // 你现有的消息发送函数
+
+  // 可选：点完隐藏或替换这批 chip
+  group.innerHTML = '';
+});

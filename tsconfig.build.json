@@ -6,7 +6,19 @@
     "rootDir": "src",
     "declaration": true,
     "declarationMap": true,
-    "sourceMap": true
+    "sourceMap": true,
+    "typeRoots": ["node_modules/@types"],
+    "baseUrl": ".",
+    "paths": {
+      "@deepseek-ai/cordis": ["node_modules/@deepseek-ai/cordis"],
+      "@deepseek-ai/cosmokit": ["node_modules/@deepseek-ai/cosmokit"],
+      "@deepseek-ai/schemastery": ["node_modules/@deepseek-ai/schemastery"],
+      "@deepseek-ai/dsh-llm": ["node_modules/@deepseek-ai/dsh-llm"],
+      "@deepseek-ai/dsh-agent": ["node_modules/@deepseek-ai/dsh-agent"],
+      "@deepseek-ai/dsh-session": ["node_modules/@deepseek-ai/dsh-session"],
+      "@deepseek-ai/dsh-tools": ["node_modules/@deepseek-ai/dsh-tools"],
+      "@deepseek-ai/dsh-system-prompt": ["node_modules/@deepseek-ai/dsh-system-prompt"]
+    }
   },
   "include": ["src"],
   "exclude": ["scripts"]

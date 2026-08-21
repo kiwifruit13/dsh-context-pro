@@ -1,7 +1,7 @@
 {
   "name": "@kiwifruit/dsh-context-pro",
   "description": "DSH Agent 上下文浸泡器：在 System Prompt 注入五维认知图鉴，让 CoT 自行调配认知结构；末尾 JSON 快照提取链演化状态（链协议模式，prestep 零干预）",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "publishConfig": {
     "access": "public"
   },
@@ -64,7 +64,11 @@
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/dsh-agent": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-llm": "^0.0.1-rc.1",
+    "@deepseek-ai/dsh-session": "0.1.0-rc.8",
+    "@deepseek-ai/dsh-system-prompt": "0.1.0-rc.8",
+    "@deepseek-ai/dsh-tools": "0.1.0-rc.8",
     "@deepseek-ai/schemastery": "^3.18.1",
+    "@types/node": "^26.2.0",
     "typescript": "^5.7.0",
     "zod-to-openapi": "^0.2.1"
   }

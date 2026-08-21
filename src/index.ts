@@ -95,6 +95,8 @@ function registerInsightTool(ctx: Context, engine: InsightEngine): void {
     name: 'get_insights',
     description:
       '获取当前会话的认知洞察建议（链间化学反应/迁移预测/置信度趋势/缺口聚合/分歧收敛）。' +
+      '每条洞察附带 confidenceProfile（节点证据 + 边证据 + 反证 + 综合评分 attributionScore）——' +
+      '帮助你判断"这条洞察为什么这样判断、可信度多少"。' +
       '参考性质，非约束——你可以采纳也可以忽略。' +
       '当对话累积了 3 轮以上、或用户问题涉及多维度分析时调用，能提升回答的深度和全局性。' +
       '建议在回复末尾对洞察做简要回应（不强制），让用户感知到 AI 的主动思考。',
@@ -105,6 +107,11 @@ function registerInsightTool(ctx: Context, engine: InsightEngine): void {
           type: 'string',
           description:
             '筛选洞察类型（可选）：cross-reaction / migration / confidence-trend / gap-aggregation / divergence-watch。不传则返回全部。',
+        },
+        minScore: {
+          type: 'number',
+          description:
+            '按 attributionScore 过滤（如 0.7 = 只看高可信度洞察）。范围 0-1，不传则不过滤。',
         },
       },
     },
@@ -137,19 +144,38 @@ function registerInsightTool(ctx: Context, engine: InsightEngine): void {
                 },
                 evidence: { type: 'number' },
                 timestamp: { type: 'number' },
+                confidenceProfile: {
+                  type: 'object',
+                  properties: {
+                    attributionScore: { type: 'number' },
+                    rationale: { type: 'string' },
+                    nodeEvidenceCount: { type: 'number' },
+                    edgeEvidenceCount: { type: 'number' },
+                    contradictingCount: { type: 'number' },
+                  },
+                },
               },
             },
           },
         },
       },
       render: (_args: unknown, value: unknown) => {
-        const v = value as { insights?: unknown[] }
+        const v = value as { insights?: Array<{ title: string; detail: string; severity: string; evidence?: number; confidenceProfile?: { attributionScore: number; rationale: string } }> }
         const parts: { type: 'text'; text: string }[] = []
         if (v.insights && v.insights.length > 0) {
           parts.push({
             type: 'text',
-            text: `## 认知洞察（建议，非约束）\n${(v.insights as { title: string; detail: string; severity: string; evidence?: number }[])
-              .map((i) => `- [${i.severity}] ${i.title}：${i.detail}${i.evidence ? `（证据 ${i.evidence}）` : ''}`)
+            text: `## 认知洞察（带归因档案，建议，非约束）\n${v.insights
+              .map((i) => {
+                const score = i.confidenceProfile?.attributionScore
+                const rationale = i.confidenceProfile?.rationale
+                return (
+                  `- [${i.severity}] ${i.title}：${i.detail}${i.evidence ? `（证据 ${i.evidence}）` : ''}` +
+                  (typeof score === 'number'
+                    ? `\n  - 归因：${rationale ?? ''}（attributionScore=${score.toFixed(2)}）`
+                    : '')
+                )
+              })
               .join('\n')}`,
           })
         }
@@ -159,7 +185,7 @@ function registerInsightTool(ctx: Context, engine: InsightEngine): void {
         return parts
       },
     },
-    async execute(args: { type?: string }, exec: ToolRunContext) {
+    async execute(args: { type?: string; minScore?: number }, exec: ToolRunContext) {
       const sessionId = sessionIdFromExec(exec)
       // 开发模式下：验证 tool 上下文的 sessionId 与 engine 存储键一致
       if (DEV_MODE && sessionId !== 'unknown') {
@@ -171,7 +197,12 @@ function registerInsightTool(ctx: Context, engine: InsightEngine): void {
         }
       }
       const typeFilter = (args.type ?? undefined) as InsightType | undefined
-      const insights = engine.getInsights(sessionId, typeFilter)
+      let insights = engine.getInsights(sessionId, typeFilter)
+      if (typeof args.minScore === 'number') {
+        insights = insights.filter(
+          (i) => (i.confidenceProfile?.attributionScore ?? 0) >= args.minScore!,
+        )
+      }
       recordInsightToolCall(insights.length > 0)
       return { insights }
     },

@@ -1,9 +1,9 @@
 # DSH-Context-Pro
 
-**DSH Agent 的链感知系统**——让模型内化五维认知结构（因果/逻辑/操作/叙事/时间），在回复末尾通过一行 JSON 快照隐式标记，系统在后台提取并维护会话内链图，用户全程无感。
+**DSH Agent 的链感知系统 + 洞察引擎**——让模型内化五维认知结构（因果/逻辑/操作/叙事/时间），在回复末尾通过一行 JSON 快照隐式标记，系统在后台提取并维护会话内链图，并对每轮回复做洞察分析（带归因档案），用户全程无感。
 
 > 定位：不是记忆引擎，不是注入器，是**认知结构层**。
-> 核心哲学：**CoT 放权**——系统只做两件事：注入图鉴到 System Prompt + 解析 JSON 快照。
+> 核心哲学：**CoT 放权**——系统只做三件事：注入图鉴到 System Prompt + 解析 JSON 快照 + 在 ChainGraph 上做归因洞察（超然层）。
 
 ## 核心机制
 
@@ -43,6 +43,54 @@ session/event → hook.ts 解析快照 + 更新 ChainGraph + 剥离 JSON 行
 ### 链间化学反应
 
 五链可相互催化：因果×时间 → 深层归因动力学，逻辑×操作 → 抗脆弱执行手册，叙事×因果 → 沉浸式深度诊断，时间×叙事 → 变革蓝图。详见 `docs/Integrated-Catalysis.md`（已注册为技能 `integrated-catalysis`）。
+
+## 洞察引擎
+
+洞察引擎是链感知系统之上的**超然层**——只观察、只建议、不干预 CoT。它解决一个核心问题：**让 AI 真的越来越懂用户**。
+
+### 它在做什么
+
+每轮模型回复后，洞察引擎在 ChainGraph（会话内的全局结构）上做四步归因：
+
+```
+ChainGraph（会话内的累积知识）
+   ↓
+6 个分析器产出 InsightItem[]（链间化学反应/迁移预测/置信度趋势等）
+   ↓
+attributeInsightsPure() 在 ChainGraph 上做归因
+   ↓
+每条 InsightItem 附带 ConfidenceProfile：
+   • nodeEvidence：基于哪些 ChainNode（primary / supporting / contradicting）
+   • edgeEvidence：基于哪些结构化关系（parent-child / divergence / cross-chain-link 等）
+   • contradictingEvidence：反向证据
+   • attributionScore：综合评分 0-1
+   • rationale：人类可读的归因路径
+   ↓
+get_insights 工具暴露归因洞察（模型按需调取，参考非约束）
+   ↓
+generateTopics() 基于归因洞察生成推荐话题（话术引用真实 ChainNode 内容）
+   ↓
+用户侧话题卡片（基于 basedOn 档案展示"为什么推荐这个话题"）
+```
+
+### 它解决的核心问题
+
+| 旧版本（v0.2.0）的问题 | v0.3+ 的解决 |
+|---|---|
+| 洞察只是"我看到了 X"的现象报告 | 洞察升级为"我为什么这样判断"的归因诊断 |
+| 话题按洞察 type 套死模板（"如果是化学反应就推荐 X"） | 话题话术从归因档案动态生成，引用真实 ChainNode 内容 |
+| 用户感受不到"AI 真的懂我" | 归因真实 + 引用真实 → 用户的"被理解"感自然涌现 |
+
+### 关键设计原则
+
+- **零新增存储**：归因档案随返回值流转，不持久化
+- **洞察千变万化，方法论稳定**：评估方法（四步法）结构固定，洞察内容由 ChainGraph 实时生成
+- **基于 ChainGraph 多轮对话**：跨轮引用让"AI 真的懂我"的感受自然涌现，不需要额外机制
+- **超然层纯粹**：归因档案是"档案"，不参与 CoT 推理
+
+### 完整设计文档
+
+详细设计（契约、归因算法、话题生成、生命周期、配置、测试）：[`docs/insight-engine-design.md`](./docs/insight-engine-design.md)
 
 ## 安装与装配
 
@@ -119,7 +167,8 @@ dsh plugin --profile web add @kiwifruit/dsh-context-pro
 |---|---|---|
 | **五链图鉴注入** | 因果/逻辑/操作/叙事/时间 + 情绪底色 + 融合法则 | `chains.injectProtocol: true` 自动注入 System Prompt |
 | **JSON 快照提取** | 末尾一行 JSON，自动解析入链图、自动剥离（用户不可见） | `hook.ts` 监听 `session/event` |
-| **洞察引擎（超然层）** | 链间化学反应/迁移预测/置信度趋势/缺口聚合/分歧收敛，**仅建议不干预** | `get_insights` 工具 + HTTP API |
+| **洞察引擎（超然层 + 归因）** | 链间化学反应/迁移预测/置信度趋势/缺口聚合/分歧收敛，**仅建议不干预**；每条洞察附带归因档案（节点证据 + 边证据 + 反证 + 综合评分 attributionScore） | `get_insights` 工具 + HTTP API |
+| **话题生成（基于归因洞察）** | 每轮重建推荐话题，话术引用真实 ChainNode 内容（不是固定模板）；每条话题带 `basedOn` 档案说明"为什么推荐这个话题" | `getTopics()` + HTTP API + Client UI 注入 |
 | **话题卡片 UI** | 输入区下方渲染可点击话题，点击复制到剪贴板 | Client 插件挂载 `conversation.input.dock` |
 | **HTTP API** | `/api/context-pro/topics` `/mark-active` `/topics/stream` `/topics/batch` `/stats` | `webServer` 服务自动注册，支持鉴权/限流 |
 | **项目技能注册** | `agent-principles` `api-contract-guide` `architectural-thinking` `integrated-catalysis` `chain-fusion-advanced` `insight-engine` `hook-tool-data-flow` | 启动时自动注册，模型可发现 |
@@ -145,7 +194,8 @@ dsh plugin --profile web add @kiwifruit/dsh-context-pro
 | `docs/Integrated-Catalysis.md` | 链间化学反应催化酶（技能 `integrated-catalysis`） |
 | `docs/AGENTS.md` | 智能体工作原则（技能 `agent-principles`） |
 | `docs/CLAUDE.md` | API/接口/胶水公约（技能 `api-contract-guide`） |
-| `docs/洞察引擎.md` | 洞察引擎架构与分析器详解 |
+| `docs/洞察引擎.md` | 洞察引擎架构与分析器详解（v0.2.0 历史版本） |
+| `docs/insight-engine-design.md` | **洞察引擎 v0.3+ 完整设计文档**（归因档案 + 话题生成） |
 
 ## 目录结构
 
@@ -174,6 +224,8 @@ DSH-Context-Pro/
 │   ├── verify-e2e.ts      端到端装配验证
 │   ├── verify-chains.ts   链感知方案验证（40 用例）
 │   ├── verify-protocol.ts 图鉴协议内容完整性验证
+│   ├── verify-attribution.ts 归因算法验证（23 断言）
+│   ├── verify-topics.ts   话题生成验证（13 断言）
 │   └── diag-*.ts          会话日志/崩溃诊断工具链
 ├── docs/                  设计文档 / 技能源文件 / 公约
 ├── cordis.yml             装配示例（npm 包模式）
@@ -207,6 +259,8 @@ node --import tsx/esm scripts/verify-cordis-config.ts
 | 链图跟会话生命周期 | 删对话即删链，非长期记忆，零残留 |
 | 纯 TS 无外部引擎 | 贴近 DSH 生态、HMR 友好、零依赖 |
 | 洞察引擎超然层 | 只观察、只建议、不干预 CoT，避免污染模型推理 |
+| **归因档案（v0.3+）** | 让洞察从"结果评价"升级为"归因诊断"：节点证据 + 边证据 + 反证 + 综合评分。洞察本身千变万化，但评估方法稳定可复用 |
+| **话题基于归因生成** | 话题必须依据洞察产生，话术引用真实 ChainNode 内容（不按洞察 type 套死模板） |
 | Client UI 走 HTTP | 持久化、重启不丢失、不依赖动态插件 RPC |
 
 ## 发布到 npm
