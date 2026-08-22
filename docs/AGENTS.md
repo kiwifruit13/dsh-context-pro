@@ -1,10 +1,10 @@
 # 智能体工作原则（Agent Principles）
 
-> 精炼自工作空间既有四份指导文件（AGENTS.md / CLAUDE.md / .CLAUDE\*），去重并消解冲突后沉淀的唯一可执行版本；作为 AGENTS.md 自动加载。
 > 原则而非规则堆砌：给出判断依据，只保留极少数硬约束。以"删掉某条后行为不变，则该条是噪音"为检验标准。
 > v1.0 · 2026-08
 
 ---
+# 简述（详情参见全文）
 
 ## 1. 核心哲学
 
@@ -58,20 +58,59 @@
 - 可验证目标示例：写测试让失败用例通过；跑通 demo 并展示输出；改动前后测试全绿。
 - 交付物给出可点击路径；汇报保留结论与关键数据，丢弃中间过程。
 
-## 8. Skill 维护（DSH 实测规范）
+---
+##  研发质量阶段流程
 
-- **命名即生死**：skill 目录名与 frontmatter `name` 必须 kebab-case（`^[a-z0-9]+(?:-[a-z0-9]+)*$`）且一致；含空格/大写/斜杠会被**静默忽略**（skill-builder 案例：`Skill Builder / Creator` → 登记为 unknown，改 `skill-builder` 即恢复）。
-- **篇幅上限**：SKILL.md **上限 500 行**（skill-creator 官方标准）；超限把整节拆进 `references/`（一级深，勿嵌套）。clawhub 的"max 80 行"是其生态推荐值，非 DSH 硬约束，仅作参考。
-- **frontmatter 必填 `name` + `description`**；可选 `whenToUse`/`metadata`/`disable-model-invocation`/`user-invocable`。禁用旧键 `disableModelInvocation`/`modelInvocable`/`userInvocable`——任一出现整个 skill 被忽略。
-- **触发设计**：会话目录只向模型暴露 `name` + `description`（`whenToUse` 加载后才可见）。description 写**触发判别句式**（"当需要 X 或 Y 时使用"），覆盖构建 + 指导两类场景；并锚定对象规避同名歧义（如 Cordis 插件 vs 康蒂思）。
-- **安装位置**：skill-installer 脚本默认装 `~/.codex/skills`，DSH 不扫该目录——必须 `--dest C:\Users\kiwif\.agents\skills`。装完 watcher **即时生效**，无需重启。
-- **合规检测**：`node E:\Deepseek\check-skills.mjs [skill名]` 复刻 DSH 解析逻辑，交付前跑一遍。
+### 1. 需求阶段
+
+- 使用 Gherkin 语法编写 Feature / Scenario。
+- 每个 Feature 必须覆盖四类场景：**正常、异常、边界、权限**。
+- 产品、开发、测试共同确认
+
+### 2. 编码阶段
+
+- 根据已确认的 Gherkin 场景实现代码（AI 或人工均可）。
+- 保持函数职责单一（Single Responsibility）。
+- 控制圈复杂度，超出阈值时重构。
+  - 具体阈值见 CLAUDE.md「质量门禁标准」。
+
+###  3.自动化测试
+
+按以下分层依次覆盖：
+
+| 层级 | 覆盖目标 |
+|------|----------|
+| 单元测试 | 核心逻辑、纯函数、工具方法 |
+| 验收测试 | Gherkin 场景转成可执行验收测试 |
+| 集成测试 | 模块间协作与数据流 |
+| E2E 测试 | 关键用户路径端到端验证 |
+
+
+### 4. 质量门禁（合并前必须全部通过）
+
+- [ ] 编译 / 类型检查通过
+- [ ] 单元测试100% 通过
+- [ ] 覆盖率、圈复杂度、重复率、静态规则达标
+      → 具体阈值与规则集见 CLAUDE.md「质量门禁标准」
+- [ ] 关键 E2E 场景通过
+
+###  5.可选增强（按项目需要启用）
+
+- 变异测试（Mutation Testing）
+- 契约测试（Consumer / Provider）
+- 性能基准测试
+- 安全扫描（SAST / DAST）
+- 依赖漏洞检查（SCA）
+
+---
 
 ### API 文档维护（防漂移公约）
 
-- **以代码为唯一真相源**：`api_reference.md` / `api_class_reference.md` 由 `python E:\Deepseek\generate-api-docs.py` 自动生成（inspect 遍历全部导出符号），人工修改会被下次生成覆盖。
-- **契约门禁**：`tests/test_api_contract.py` 断言 `__all__` 可访问性、核心方法存在性、枚举完整性、字符串入参兼容（历史缺陷回归防线）；改动代码后必须 `pytest` 全绿。
-- **修改流程**：改代码 docstring/签名 → 重跑生成器 → pytest（含契约门禁）→ check-skills。
+- **以代码为唯一真相源**（详情参见 api-docs-auto-generation与generate-api-docs文档内容）
+- **契约门禁**（详情参见 api-docs-auto-generation与generate-api-docs文档内容）
+- **修改流程**（详情参见 api-docs-auto-generation与generate-api-docs文档内容）
+
+---
 
 这是一个非常棒的工程思维。我们就将这套逻辑**蒸馏为模型的“思考前规则”和“输出自检清单”**。
 
@@ -132,15 +171,12 @@
 3. **规则三**利用了LLM的上下文学习能力，将报错转化为“少样本修正”；
 4. **规则四**则是最精妙的一步——将“二选一分类难题”降维为“单一动作生成难题”，显著降低小模型的决策熵。
 
-
-
-
-
+---
 
 # AI Agent 常见编码错误规避指南
 
 ## 适用角色说明
-- **作为 Prompt 工程材料**：可将各节「规避方案」精简为指令直接写入 AI 的 `system` 字段。
+- **作为 Prompt 工程材料**：可将各节「规避方案」精简为指令直接写入 AI 的 `system Prompt` 字段。
 - **作为人工 Code Review 清单**：在代码合并请求时逐条对照审查。
 
 ## 上下文维护策略

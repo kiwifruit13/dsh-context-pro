@@ -37,7 +37,7 @@ function recordDiagnostic(context: SessionIdDiagnosticContext): void {
  * @returns session ID 字符串，不可用时返回 'unknown'
  */
 export function sessionIdFromEvent(session: unknown): string {
-  const id = (session as { id?: unknown }).id
+  const id = (session as { id?: unknown } | null | undefined)?.id
   if (id === undefined) {
     recordDiagnostic({
       source: 'event',

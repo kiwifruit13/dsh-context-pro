@@ -17,6 +17,7 @@ import {
   type ChainKind,
   type ChainNode,
   type ChainRole,
+  type SnapshotProgress,
 } from './types.ts'
 
 /** 角色推进：同一父下的深化，角色沿表层角色顺序推进（cause→solution 等） */
@@ -36,6 +37,8 @@ export function createChainGraph(): ChainGraph {
   const nodes = new Map<string, ChainNode>()
   /** kind@root → 已收束（end）标记 */
   const ended = new Set<string>()
+  let latestSummary: string | undefined
+  let latestProgress: SnapshotProgress | undefined
 
   function upsert(anchor: ChainAnchor, content: string, sourceRef: string): ChainNode {
     const { kind, root } = anchor
@@ -217,7 +220,7 @@ export function createChainGraph(): ChainGraph {
     }
   }
 
-  return { nodes, endedRoots: ended, upsert, activeRoots, activeNodes, dispose, prune, supersedeRoot }
+  return { nodes, endedRoots: ended, latestSummary, latestProgress, upsert, activeRoots, activeNodes, dispose, prune, supersedeRoot }
 }
 
 /** 节点 id → 链根键（`causal@1.2` → `causal@1`，修正后缀 ′ 不影响分组） */

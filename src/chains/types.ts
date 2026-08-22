@@ -165,6 +165,10 @@ export interface ChainGraph {
   nodes: Map<string, ChainNode>
   /** 已收束根链 key（kind@root；end/supersede 均入列；导览层判断"不再变化"用） */
   endedRoots: Set<string>
+  /** 最新一句话摘要（快照 summary_sentence，P1 消费层） */
+  latestSummary?: string
+  /** 最新操作链进度（快照 progress，P1 消费层；仅操作链有值） */
+  latestProgress?: SnapshotProgress
 
   /** 追加/深化/分叉/修正——统一入口（模型驱动，忠实执行） */
   upsert(anchor: ChainAnchor, content: string, sourceRef: string): ChainNode
@@ -215,6 +219,16 @@ export interface SnapshotSupersede {
   reason: string
 }
 
+/** 操作链进度（快照 progress 顶层字段；用户说"继续"时系统据此接续） */
+export interface SnapshotProgress {
+  /** 上一步已完成的动作描述 */
+  current_step: string
+  /** 下一步待执行的动作描述 */
+  next_step: string
+  /** 阻塞原因（可选） */
+  blocker?: string
+}
+
 /**
  * 末尾 JSON 快照：模型在回复末尾用一行 JSON 输出的主链终态。
  *
@@ -233,6 +247,10 @@ export interface ChainSnapshot {
   supersede?: SnapshotSupersede
   /** 原始 JSON 行（溯源） */
   raw: string
+  /** 一句话总结当前脉络（≤30字），供压缩骨架与前端脉络卡片标题 */
+  summary_sentence?: string
+  /** 操作链进度（仅操作链；用户说"继续"时系统据此接续） */
+  progress?: SnapshotProgress
 }
 
 // ---------------------------------------------------------------------------

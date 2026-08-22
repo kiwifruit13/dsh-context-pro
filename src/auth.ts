@@ -190,10 +190,8 @@ export function withAuth(
   authMiddleware: ReturnType<typeof createAuthMiddleware>,
 ): (req: import('http').IncomingMessage, res: import('http').ServerResponse) => Promise<void> {
   return async (req, res) => {
-    return new Promise<void>((resolve) => {
-      authMiddleware(req, res, () => {
-        Promise.resolve(handler(req, res)).then(resolve)
-      })
-    })
+    // 中间件放行时执行 handler 并 await 其完成；
+    // 鉴权/限流拒绝时中间件已写出响应并直接返回，此处 await 随之 resolve，不挂起。
+    await authMiddleware(req, res, () => handler(req, res))
   }
 }

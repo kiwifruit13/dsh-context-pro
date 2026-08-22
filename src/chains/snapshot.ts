@@ -26,6 +26,7 @@ import {
   type ChainRole,
   type ChainSnapshot,
   type SnapshotNodeValue,
+  type SnapshotProgress,
   type SnapshotSupersede,
 } from './types.ts'
 import { recordSnapshotAttempt } from '../metrics.ts'
@@ -165,8 +166,32 @@ export function parseSnapshot(text: string): ChainSnapshot | null | undefined {
     }
   }
 
+  // 可选顶层字段：一句话摘要（≤30字）
+  const summaryRaw = (obj as { summary_sentence?: unknown }).summary_sentence
+  let summary_sentence: string | undefined
+  if (typeof summaryRaw === 'string') {
+    const trimmed = summaryRaw.trim()
+    if (trimmed && trimmed.length <= 30) summary_sentence = trimmed
+  }
+
+  // 可选顶层字段：操作链进度（用户说"继续"时系统据此接续）
+  const progressRaw = (obj as { progress?: unknown }).progress
+  let progress: SnapshotProgress | undefined
+  if (typeof progressRaw === 'object' && progressRaw !== null && !Array.isArray(progressRaw)) {
+    const po = progressRaw as Record<string, unknown>
+    const cs = typeof po.current_step === 'string' && po.current_step.trim() ? po.current_step.trim() : ''
+    const ns = typeof po.next_step === 'string' && po.next_step.trim() ? po.next_step.trim() : ''
+    if (cs || ns) {
+      progress = {
+        current_step: cs,
+        next_step: ns,
+        blocker: typeof po.blocker === 'string' && po.blocker.trim() ? po.blocker.trim() : undefined,
+      }
+    }
+  }
+
   recordSnapshotAttempt(true)
-  return { chain, nodes, supersede, raw: last }
+  return { chain, nodes, supersede, summary_sentence, progress, raw: last }
 }
 
 /** 快照条目值 -> SnapshotNodeValue（容错校验：字符串或 {value|ai|user} 对象） */
@@ -377,6 +402,10 @@ export function mergeSnapshotIntoGraph(
       { convergedFrom: value.from, confidence })
     isFirst = false
   }
+
+  // P1 消费层：可选顶层字段存入图（供 hook 注入 / 前端读取）
+  if (snapshot.summary_sentence) graph.latestSummary = snapshot.summary_sentence
+  if (snapshot.progress) graph.latestProgress = snapshot.progress
 
   return merged
 }

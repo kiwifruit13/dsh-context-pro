@@ -23,13 +23,16 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { ChainIndex, ChainSnapshot, InsightEngine, SessionEventInput, ChangeContext, ChainChangeType, ChainGuide, ChainRole } from './types.ts'
 import { createChainIndex } from './index.ts'
-import { parseSnapshot } from './snapshot.ts'
+import { parseSnapshot, stripSnapshotLine } from './snapshot.ts'
 import { sessionIdFromEvent } from '../session-id.ts'
 import { recordChainHealth, recordTopicNoteTriggered } from '../metrics.ts'
 
 /** Session ID 一致性检查器（运行时断言，仅在开发模式记录） */
 const DEV_MODE = process.env.NODE_ENV !== 'production'
 const sessionIdMismatchLog = new Map<string, number>()
+
+/** 用户"继续"意图正则（仅匹配短指令，避免"继续深入分析"等误触发） */
+const CONTINUE_RE = /^\s*(继续(?:吧)?|接着(?:来)?|往下(?:走)?)\s*[，,。.！!?。.、\s]*$/
 
 function checkSessionIdConsistency(
   eventSessionId: string,
@@ -86,14 +89,15 @@ function eventToInput(event: { type: string; data: unknown }): SessionEventInput
   if (event.type === 'assistant/message') {
     const msg = event.data as { message?: { content?: unknown[] } }
     const content = msg.message?.content ?? []
-    const text = extractText(content)
-    if (!text) return null
+    const rawText = extractText(content)
+    if (!rawText) return null
+    const stripped = stripSnapshotLine(rawText)
     return {
       type: event.type,
-      text,
+      text: stripped,
       role: 'assistant',
       timestamp: Date.now(),
-      snapshot: extractSnapshot(text),
+      snapshot: extractSnapshot(rawText),
     }
   }
   if (event.type === 'user/message') {
@@ -132,6 +136,22 @@ export function registerChainHook(
       const input = eventToInput(event)
       if (input) {
         insightEngine?.ingestEvent(sessionId, input)
+      }
+
+      // P1: 用户说"继续" → 注入操作链进度（复用 agent.inject 通道，与话题便条同机理）
+      if (input?.role === 'user' && CONTINUE_RE.test(input.text)) {
+        const g = index.graph(sessionId)
+        if (g?.latestProgress?.next_step) {
+          const agents = ctx.get('agents') as
+            | { get: (id: unknown) => { inject?: (msg: unknown) => void } } | undefined
+          if (agents) {
+            const agent = agents.get(SessionId(sessionId))
+            agent?.inject?.(createUserMessage({
+              content: [{ type: 'text', text: `[操作链进度] 上一步: ${g.latestProgress.current_step}，下一步: ${g.latestProgress.next_step}${g.latestProgress.blocker ? '（阻塞: ' + g.latestProgress.blocker + '）' : ''}` }],
+              source: { kind: 'plugin', plugin: 'dsh-context-pro' },
+            }))
+          }
+        }
       }
     })
 

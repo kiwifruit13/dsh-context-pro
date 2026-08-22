@@ -1,7 +1,5 @@
 这份整合后的 `CLAUDE.md` 将 **API 设计（对外门面）**、**接口契约（代码图纸）** 与 **胶水代码（连接粘合剂）** 三大核心规范融为一体，形成一套端到端的全链路开发公约。
 
-你可以直接将其保存为项目根目录下的 `CLAUDE.md` 或 `./.claude/CLAUDE.md`。
-
 ---
 
 # API、接口与胶水代码开发全链路公约
@@ -233,3 +231,155 @@ API 是系统对外暴露的**物理入口**（如 HTTP/REST 或 gRPC 服务）�
 ---
 
 > **使用说明**：本文件统一了 API 设计、接口契约和胶水代码的规范。团队可根据实际技术栈（如是否使用 gRPC、是否必须严格 RESTful）调整第 1 章细节，但**核心哲学（第 0 章）和第 3 章（胶水红线）为强制遵守项**，不得修改。
+
+---
+
+# 工程标准与 API 规范
+
+> 本文档是工程层面的"宪法"，定义所有可量化的技术指标与接口契约。
+> 任何代码、文档、Agent 产出均须满足本文档约束。
+
+---
+
+## 1. API 设计规范
+
+### 1.1 命名与风格
+
+| 对象 | 规则 | 示例 |
+|------|------|------|
+| URL 路径 | `kebab-case` | `/api/v1/user-orders` |
+| 接口 / 方法名 | `PascalCase` | `GetUserOrder` |
+| 请求 / 响应字段 | `camelCase`（对外）或 `snake_case`（内部） | `orderId` / `order_id` |
+| 枚举值 | `UPPER_SNAKE_CASE` | `ORDER_STATUS_PAID` |
+
+### 1.2 版本与兼容
+
+- URL 中携带主版本号：`/api/v1/...`。
+- 新增字段向后兼容；废弃字段保留至少一个大版本。
+
+### 1.3 错误响应
+
+- 统一结构：`{ "code": int, "message": string, "traceId": string }`。
+- `code` 全局唯一，维护在 `docs/error-codes.md`。
+
+---
+
+## 2. 数据契约
+
+- 所有对外接口必须维护 `openapi.yaml`（≥ 3.0）。
+- `tests/test_api_contract.py` 断言 `__all__` 可访问性及枚举完整性。
+- 接口变更必须同步更新契约文件，否则 CI 拒绝合并。
+
+---
+
+## 3. 胶水代码规范
+
+### 3.1 适用范围
+
+- C++ ↔ Python 绑定
+- C → C++ 封装层
+- 跨语言 RPC 桥接
+- 消息队列序列化 / 反序列化适配
+
+### 3.2 实现要求
+
+- 只做类型转换与调用转发，禁止包含业务逻辑。
+- 保持可替换性：替换底层实现时胶水层接口不变。
+
+### 3.3 日志标准（强制）
+
+每条胶水层日志必须包含以下字段：
+
+| 字段 | 说明 |
+|------|------|
+| `traceId` | 全链路追踪 ID |
+| `caller` | 调用方标识 |
+| `callee` | 被调方标识 |
+| `timestamp` | ISO 8601 格式 |
+| `duration_ms` | 耗时 |
+| `status` | `success` / `fail` / `timeout` |
+
+---
+
+## 4. 质量门禁标准
+
+> 以下为所有量化指标的权威定义。AGENTS.md 中引用本节。
+
+### 4.1 覆盖率
+
+| 指标 | 最低要求 |
+|------|----------|
+| 行覆盖率（Line Coverage） | ≥ 80% |
+| 分支覆盖率（Branch Coverage） | ≥ 75% |
+| 核心模块（标记 `@critical`） | 行 ≥ 90%，分支 ≥ 85% |
+
+### 4.2 复杂度
+
+| 指标 | 阈值 |
+|------|------|
+| 圈复杂度（Cyclomatic Complexity） | ≤ 10 / 函数 |
+| 认知复杂度（Cognitive Complexity） | ≤ 15 / 函数 |
+| 函数长度 | ≤ 50 行（不含空行与注释） |
+
+### 4.3 重复率
+
+- 代码重复率 ≤ **5%**（以 SonarQube / jscpd 检测为准）。
+- 连续重复块 ≥ 6 行即计为重复。
+
+### 4.4 静态分析规则集
+
+| 语言 | 工具 | 规则等级 |
+|------|------|----------|
+| Python | `ruff` + `mypy --strict` | 0 error, 0 warning |
+| TypeScript / JS | `eslint`（`@typescript-eslint/recommended`） | 0 error |
+| C / C++ | `clang-tidy` + `cppcheck` | 0 error |
+| Go | `golangci-lint` | 0 error |
+
+### 4.5 编译与类型检查
+
+- 所有语言必须在 CI 中执行完整编译，`-Werror`（C/C++）或 `--strict`（TS）开启。
+- 类型检查零错误。
+
+### 4.6 测试通过要求
+
+- 单元测试：100% 通过，不允许 skip / xfail（除非关联 Issue）。
+- E2E：关键路径用例（标记 `@smoke`）100% 通过。
+
+---
+
+## 5. Gherkin → 可执行测试工具链
+
+| 语言 / 框架 | 工具 |
+|-------------|------|
+| Python | `pytest-bdd` |
+| JavaScript / TS | `@cucumber/cucumber` |
+| Java / Kotlin | `Cucumber-JVM` |
+| Go | `godog` |
+
+- Feature 文件存放于 `tests/features/`。
+- Step 定义与 Feature 文件同名目录对应。
+- CI 中验收测试作为独立 Stage 执行。
+
+---
+
+## 6. 契约测试（可选增强）
+
+- 框架：`Pact`（Consumer-Driven）或 `Spring Cloud Contract`。
+- Provider 验证在 CI 中自动运行。
+- 契约文件存放于 `contracts/`，版本化管理。
+
+---
+
+## 7. 安全与依赖
+
+- SAST：`semgrep` 或 `CodeQL`，阻断 `high` 及以上告警。
+- 依赖漏洞：`trivy` / `snyk`，`critical` 漏洞 24h 内修复。
+- 密钥扫描：`gitleaks`，CI 阻断。
+
+---
+
+## 8. 变更管理
+
+- 任何对本文件中量化指标的修改，需经 Tech Lead 审批。
+- 修改后同步更新 AGENTS.md 中的引用描述（如有）。
+- 变更记录写入 `CHANGELOG.md`。

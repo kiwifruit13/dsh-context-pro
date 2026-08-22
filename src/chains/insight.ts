@@ -549,6 +549,69 @@ function analyzeSnapshotTrend(
 }
 
 // ---------------------------------------------------------------------------
+// 分析器 ⑦：操作链执行洞察（progress 停滞/阻塞，全局时间序列信号）
+//
+// 定位：不依赖图变更，只要当前快照有 progress 就评估执行状态。
+//   - 停滞：current_step 连续 N 轮未变（N≥3）→ 推进停滞预警
+//   - 阻塞：blocker 字段非空 → 明确受阻
+// 两路输出共用：进入洞察池（给模型）+ 话题生成（给用户）。
+// ---------------------------------------------------------------------------
+
+function analyzeOperationProgress(
+  snapshot: ChainSnapshot,
+  filterSelector: FilterSelector,
+  sessionId: string,
+): InsightItem[] {
+  const items: InsightItem[] = []
+  const now = Date.now()
+  if (!snapshot.progress) return items
+
+  // 从历史快照重建 progress.current_step 序列（含当前轮；ingestEvent 先于 analyze）
+  const history = filterSelector.query(sessionId, { type: 'recent-snapshots', limit: 20 })
+  const steps: string[] = []
+  for (const item of history) {
+    if (item.snapshot?.progress?.current_step) {
+      steps.push(item.snapshot.progress.current_step)
+    }
+  }
+  // 停滞：尾部连续相同 current_step 的轮数
+  if (steps.length > 1) {
+    let stalled = 1
+    const lastStep = steps[steps.length - 1]
+    for (let i = steps.length - 2; i >= 0 && steps[i] === lastStep; i--) {
+      stalled++
+    }
+    if (stalled >= 3) {
+      const severity: Severity = stalled >= 5 ? 'critical' : 'warn'
+      items.push({
+        type: 'gap-aggregation',
+        severity,
+        title: '操作链推进停滞',
+        detail: `操作链已连续 ${stalled} 轮停留在"${lastStep}"，下一步"${snapshot.progress.next_step}"尚未执行。建议确认是否遇阻或需调整计划。`,
+        references: [{ scopeKey: 'operation:progress', chain: 'operation' }],
+        evidence: 1,
+        timestamp: now,
+      })
+    }
+  }
+
+  // 阻塞：blocker 字段明确声明
+  if (snapshot.progress.blocker) {
+    items.push({
+      type: 'gap-aggregation',
+      severity: 'warn',
+      title: '操作链受阻',
+      detail: `操作链明确声明阻塞：${snapshot.progress.blocker}。当前步骤"${snapshot.progress.current_step}"，下一步"${snapshot.progress.next_step}"。`,
+      references: [{ scopeKey: 'operation:blocker', chain: 'operation' }],
+      evidence: 1,
+      timestamp: now,
+    })
+  }
+
+  return items
+}
+
+// ---------------------------------------------------------------------------
 // 推荐话题生成器
 //
 // 定位：基于洞察的高维推荐，不是追问。
@@ -927,8 +990,8 @@ function extractNodeEvidence(
     if (!ref.scopeKey || !chain || !role) continue
     const matchingNodes: ChainNode[] = []
     for (const node of graph.nodes.values()) {
-      if (node.kind !== ref.chain) continue
-      if (node.role !== ref.role) continue
+      if (node.kind !== chain) continue
+      if (node.role !== role) continue
       if (node.status !== 'active') continue
       if (ref.root !== undefined) {
         const rootKey = node.id.split('.')[0].replace(/′$/, '')
@@ -1204,7 +1267,23 @@ export function attributeInsightsPure(
     const nodeEvidences = extractNodeEvidence(insight, graph)
     const edgeEvidences = extractEdgeEvidence(nodeEvidences, graph)
     const contradictions = findContradictions(insight, nodeEvidences, edgeEvidences)
-    const { score, rationale } = computeScore(nodeEvidences, edgeEvidences, contradictions)
+    const { score } = computeScore(nodeEvidences, edgeEvidences, contradictions)
+
+    // 节点内容摘要（推荐解释的依据：模型由此理解"基于对话里的哪些内容得出此洞察"）
+    const nodeContents = nodeEvidences
+      .map((ne) => graph.nodes.get(ne.nodeId)?.content)
+      .filter((c): c is string => typeof c === 'string' && c.trim().length > 0)
+      .slice(0, 3)
+
+    // rationale：推荐解释——让模型理解"为什么向你推荐这个方向"
+    // 结构："基于对话中的[节点内容]，[洞察结论]（可信度[分数]）"
+    let rationale: string
+    if (nodeContents.length > 0) {
+      const summary = nodeContents.join('、')
+      rationale = `基于对话中的"${summary}"，${insight.detail}（可信度 ${score.toFixed(2)}）。`
+    } else {
+      rationale = `${insight.detail}（可信度 ${score.toFixed(2)}）。`
+    }
 
     const confidenceProfile: ConfidenceProfile = {
       nodeEvidence: nodeEvidences,
@@ -1509,6 +1588,7 @@ export function createInsightEngine(
         ...(shouldRun(['terminal-filled', 'terminal-emptied', 'structure-changed']) ? analyzeGapAggregation(guide) : []),
         ...(shouldRun(['divergence-detected', 'structure-changed']) ? analyzeDivergence(graph) : []),
         ...(_snapshot && shouldRun(['supersede-detected', 'confidence-shift', 'chain-type-changed']) ? analyzeSnapshotTrend(_snapshot, filterSelector, sessionId) : []),
+        ...(_snapshot?.progress ? analyzeOperationProgress(_snapshot, filterSelector, sessionId) : []),
       ]
 
       log.info(`[insight] analyze @ ${sessionId.slice(0, 8)} round ${round}: 图 ${nodeCount} 节点 → ${allInsights.length} 洞察`)
